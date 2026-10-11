@@ -145,6 +145,17 @@ describe("ViewerControls", () => {
     controls.destroy();
   });
 
+  it("restores the orthographic view indicator with the camera", () => {
+    const { controls, onOrthographicViewChange } = setup();
+    controls.alignOrthographic("top", new BoundingBox(new Vec3(1, 2, 3), new Vec3(2, 3, 4)), 0.85, false);
+    const saved = controls.snapshot();
+    controls.usePerspective();
+    controls.restore(saved);
+    expect(controls.snapshot()).toEqual(saved);
+    expect(onOrthographicViewChange).toHaveBeenLastCalledWith("top");
+    controls.destroy();
+  });
+
   it("animates between orthographic editing views", () => {
     const frames: FrameRequestCallback[] = [];
     const request = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {

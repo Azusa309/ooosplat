@@ -4,6 +4,13 @@ export type Locale = "zh-CN" | "en";
 export type TranslationParams = Record<string, string | number>;
 
 const zhCN = {
+  "viewer.saveEdits": "保存编辑",
+  "viewer.editsSaved": "编辑与视角已保存",
+  "viewer.viewSaveFailed": "编辑已保存，但视角未能保存。请检查本机存储空间后重试。",
+  "viewer.saveFailedDescription": "当前编辑尚未保存。可以重试保存，或返回编辑；不会丢弃当前操作。",
+  "export.ply": "导出 PLY",
+  "export.plyProgress": "正在导出 PLY · {value}%",
+  "export.plyFailed": "PLY 导出失败：{detail}",
   "runtime.steps": "实际训练步数",
   "runtime.speed": "训练速度",
   "runtime.stepRate": "{value} 步/秒",
@@ -583,6 +590,9 @@ const zhCN = {
   "panel.sphere": "球形",
   "panel.box": "盒形",
   "panel.keepInside": "{kind} · 区域内保留",
+  "panel.keepOutside": "{kind} · 区域外保留",
+  "viewer.invertSelection": "反选",
+  "viewer.invertSelectionTitle": "矩形选择反选未删除点；球形/盒形选择切换区域内外保留",
   "panel.regionPosition": "区域位置 {axis}",
   "panel.boxSize": "盒形尺寸 {axis}",
   "panel.radius": "半径",
@@ -600,6 +610,16 @@ const zhCN = {
 export type TranslationKey = keyof typeof zhCN;
 
 const en: Record<TranslationKey, string> = {
+  "viewer.saveEdits": "Save edits",
+  "viewer.editsSaved": "Edits and view saved",
+  "viewer.viewSaveFailed": "Edits saved, but the view could not be saved. Check local storage and retry.",
+  "viewer.saveFailedDescription": "The current edits have not been saved. Retry saving or return to editing; your changes will not be discarded.",
+  "export.ply": "Export PLY",
+  "export.plyProgress": "Exporting PLY · {value}%",
+  "export.plyFailed": "PLY export failed: {detail}",
+  "panel.keepOutside": "{kind} · Keep outside",
+  "viewer.invertSelection": "Invert",
+  "viewer.invertSelectionTitle": "Invert undeleted point selection, or switch between keeping inside and outside the crop",
   "runtime.steps": "Actual training steps",
   "runtime.speed": "Training speed",
   "runtime.stepRate": "{value} steps/s",

@@ -145,7 +145,7 @@ Sample media: [Download from Quark Drive](https://pan.quark.cn/s/1dde892a1324) t
 5. Select the Fast, Balanced, or Detailed quality preset.
 6. Review the automatically detected COLMAP acceleration status and its explanation, then select “Start Generation.”
 7. Follow live stages, metrics, and logs on the left. When processing finishes, select “Preview” under “02 Task History.”
-8. Edit the model in the “Adjust” mode under “03 Preview.” Changes are saved automatically; “Save” creates or updates `edit.ply`.
+8. Edit the model in “Preview → Adjust.” Transforms, crops, and deletions are saved automatically in the project; each project's view is stored locally on this device. “Save edits” confirms that the current edits and view have been saved. To create or update `edit.ply`, choose “Export → Export PLY.”
 9. Switch to “Animation,” choose Portrait or Landscape in the center of the command bar, and use “Export → Export video” for a 23-second MP4. Both Adjust and Animation offer “Export → Export offline HTML” to share the current edits. Exports can be cancelled, and the output folder can be opened on completion.
 10. To add detail, choose “High-res reshoot” on a completed project under “02 Task History.” Use the same device, lens, orientation, resolution, and zoom as the source project, and keep enough overlap with the original capture.
 
@@ -178,7 +178,7 @@ Each generation creates a separate directory under the projects root:
 <projects-root>\<yyyyMMdd-HHmmss_source-name>\
   final.ply             Final Gaussian Splatting file
   project.json          Project metadata and result metrics
-  edit.ply              Current edited result; safely replaced on later saves (optional)
+  edit.ply              Exported edits; safely replaced on later PLY exports (optional)
   preview.mp4           First optional animation-preview video export
   preview-2.mp4         Later video exports are automatically numbered
   preview-landscape.mp4 Landscape video (later exports are automatically numbered)
@@ -416,7 +416,7 @@ Each project keeps a source-video copy, extracted frames, COLMAP data, and Brush
 
 ### Can I view final.ply directly in OOOSplat?
 
-Yes. Select “Preview” on a completed project in “02 Task History” to open its `.ply` in the dedicated preview workspace. “Adjust” supports whole-model Transform plus rectangle, sphere, and box Gaussian selection, with non-destructive deletion, cropping, undo, and redo. Edit state is stored in the project; “Save” creates or updates the single `edit.ply`, while the original `final.ply` remains unchanged. “Animation” adds a 5-second reveal, an 8-second shockwave, a continuous orbit, and watermarked portrait MP4 export. `.sog` and `.spz` are not supported yet.
+Yes. Select “Preview” on a completed project in the task list to open its `.ply` in the dedicated preview workspace. “Adjust” supports whole-model Transform plus rectangle, sphere, and box Gaussian selection, with non-destructive deletion, cropping, inversion, undo, and redo. Edits are saved automatically in the project; “Save edits” confirms that the current edits and view have been saved without creating a model file. “Export → Export PLY” creates or updates the single `edit.ply`, while the original `final.ply` remains unchanged. Reopening restores the edits and the view saved on this device; yellow selections and undo history do not persist between sessions. “Animation” adds a 5-second reveal, an 8-second shockwave, a continuous orbit, watermarked portrait/landscape MP4 export, and offline HTML export. `.sog` and `.spz` are not supported yet.
 
 ## Technology
 

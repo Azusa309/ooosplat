@@ -60,6 +60,7 @@ export class ViewerControls {
     cameraEntity: Entity,
     private readonly onOrthographicViewChange?: (view: GaussianOrthographicView | null) => void,
     cameraError = "The preview camera component is unavailable",
+    private readonly onViewChange?: () => void,
   ) {
     if (!cameraEntity.camera) throw new Error(cameraError);
     this.canvas = canvas;
@@ -144,6 +145,7 @@ export class ViewerControls {
     this.camera.projection = state.projection;
     this.camera.orthoHeight = state.orthoHeight;
     this.orthographicView = state.orthographicView;
+    this.onOrthographicViewChange?.(state.orthographicView);
     this.updateCamera();
   }
 
@@ -199,6 +201,7 @@ export class ViewerControls {
     this.camera.orthoHeight = destinationOrthoHeight;
     this.distance = destinationDistance;
     this.horizontalFrameOffset = 0;
+    this.onViewChange?.();
     if (!animate || this.destroyed) {
       this.updateCamera();
       return;
@@ -226,6 +229,7 @@ export class ViewerControls {
         this.transitioning = false;
         this.transitionFrame = 0;
         this.updateCamera();
+        this.onViewChange?.();
       }
     };
     this.transitionFrame = requestAnimationFrame(tick);
@@ -425,6 +429,7 @@ export class ViewerControls {
     if (this.pointerId !== event.pointerId) return;
     if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
     this.cancelGesture();
+    this.onViewChange?.();
   };
 
   private onWheel = (event: WheelEvent) => {
@@ -438,5 +443,6 @@ export class ViewerControls {
       this.distance = Math.max(0.01, Math.min(1_000_000, this.distance * Math.exp(delta * 0.001)));
     }
     this.updateCamera();
+    this.onViewChange?.();
   };
 }

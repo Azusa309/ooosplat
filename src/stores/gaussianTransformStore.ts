@@ -8,10 +8,12 @@ const HISTORY_BYTES_LIMIT = 64 * 1024 * 1024;
 
 const cloneTransform = (value: GaussianTransform): GaussianTransform => ({ position: [...value.position], rotation: [...value.rotation], scale: value.scale });
 export const cloneCrop = (crop: GaussianCrop): GaussianCrop => crop?.kind === "sphere"
-  ? { kind: "sphere", center: [...crop.center], radius: crop.radius }
-  : crop?.kind === "box" ? { kind: "box", center: [...crop.center], size: [...crop.size] } : null;
+  ? { ...crop, center: [...crop.center] }
+  : crop?.kind === "box" ? { ...crop, center: [...crop.center], size: [...crop.size] } : null;
 const equalTransform = (a: GaussianTransform, b: GaussianTransform) => a.scale === b.scale && a.position.every((v, i) => v === b.position[i]) && a.rotation.every((v, i) => v === b.rotation[i]);
-const equalCrop = (a: GaussianCrop, b: GaussianCrop) => JSON.stringify(a) === JSON.stringify(b);
+const equalCrop = (a: GaussianCrop, b: GaussianCrop) =>
+  JSON.stringify(a ? { ...a, inverted: Boolean(a.inverted) } : null)
+    === JSON.stringify(b ? { ...b, inverted: Boolean(b.inverted) } : null);
 
 export const packedMaskLength = (splatCount: number) => Math.ceil(Math.max(0, splatCount) / 8);
 export const maskBit = (mask: Uint8Array, index: number) => Boolean(mask[index >>> 3] & (1 << (index & 7)));
