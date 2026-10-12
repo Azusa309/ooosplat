@@ -2304,6 +2304,8 @@ impl PipelineRunner {
             );
         }
 
+        let loop_detection = prepared.input_type == ProjectInputType::Video
+            && quality.loop_detection_enabled(state.planner_enabled);
         if state.matching_complete {
             self.events.stage(
                 PipelineStage::Matching,
@@ -2322,6 +2324,8 @@ impl PipelineRunner {
                     "COLMAP 正在进行 {backend_label} {}",
                     if prepared.input_type == ProjectInputType::Images {
                         "穷举匹配"
+                    } else if loop_detection {
+                        "顺序匹配（已开启闭环检测）"
                     } else {
                         "顺序匹配"
                     }
@@ -2351,6 +2355,7 @@ impl PipelineRunner {
                     &self.process_manager,
                     observer,
                     gpu_index,
+                    loop_detection,
                 )
                 .await?;
             }
@@ -2362,6 +2367,8 @@ impl PipelineRunner {
                 1.0,
                 if prepared.input_type == ProjectInputType::Images {
                     "穷举匹配完成"
+                } else if loop_detection {
+                    "顺序匹配（已开启闭环检测）完成"
                 } else {
                     "顺序匹配完成"
                 },

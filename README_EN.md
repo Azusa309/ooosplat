@@ -66,6 +66,7 @@ https://github.com/user-attachments/assets/5b9e8cef-4c71-4bfa-ba23-641fcdd37659
 - In Rectangle Select, drag with the left mouse button to replace the selection, use `Shift + drag` to add, and `Ctrl + drag` to remove. Use the middle mouse button to orbit, the right mouse button to pan, and the wheel to zoom.
 - Yellow highlights show the temporary selection. Press `Delete` or `Backspace` to remove selected Gaussians non-destructively, or `Esc` to clear the temporary selection.
 - Sphere and box selection enter an orthographic view automatically. Switch between side, front, and top views, then adjust the volume in the viewport or through numeric fields.
+- Use “Scene gizmo” in the Transform panel to switch between Move and Rotate; click the selected button again to turn the gizmo off. Left-drag an axis or ring to edit the model; drag empty space to orbit the camera. Both rings and numeric rotation pivot around the model center. Releasing commits one edit; `Esc` cancels the current gizmo drag. The gizmo mode is saved locally.
 - Use `Ctrl + Z` to undo and `Ctrl + Shift + Z` or `Ctrl + Y` to redo. Transform, crop, and deletion changes share one history; camera movement and temporary highlights are not recorded.
 
 ## Processing Pipeline
@@ -156,7 +157,17 @@ Usage notes:
 - The input media, project directory, and quality preset cannot be changed while a task is running.
 - “Delete” moves the complete project—including the source copy and intermediate files—to the Recycle Bin. OOOSplat does not fall back to permanent deletion if that operation fails.
 
+## New-version notifications
+
+OOOSplat shows a startup dialog when a newer release is available for your platform. Ignore dismisses it only for the current session; the next launch can remind again. Click “New version available” next to Settings to reopen it, or use “Check for updates” under Settings → App updates.
+
+The dialog copies GitHub / Quark download links and optional access codes. Paste a link into your browser to download and install manually; OOOSplat does not open links, download installers, or install updates. Successful checks are cached for 24 hours, with a 30-second manual-check cooldown. Failed checks do not affect generation or preview. Update checks are independent of anonymous statistics. Manual checks show an unavailable message until the website endpoint is deployed.
+
+See the [manifest format and publishing instructions](docs/update-notifications.md).
+
 ## Quality Presets
+
+With Auto Optimize enabled, video sequential matching uses offline loop detection in all three quality presets. It reuses the bundled vocabulary tree to help connect revisited viewpoints without a download. Matching may take longer, and not every capture will contain a detectable loop. Auto Optimize off leaves loop detection disabled; image sequences, reshoots, and Bridge retain their existing matching strategies. See the [parameter configuration guide](docs/pipeline-optimization-config.en.md).
 
 “Auto Optimize (Experimental)” is enabled by default. Video is scaled once during extraction to the selected working resolution while preserving aspect ratio and never upscaling lower-resolution media. Actual sampling never exceeds the source FPS or total frame count. Image sequences keep every valid image at its original input resolution, while COLMAP and Brush still apply the selected preset's processing limits.
 

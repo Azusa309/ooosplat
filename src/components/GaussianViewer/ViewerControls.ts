@@ -165,6 +165,10 @@ export class ViewerControls {
 
   setSceneBounds(bounds: BoundingBox) {
     this.sceneBounds = bounds.clone();
+    if (!this.enabled && this.transitioning) {
+      this.updateClipPlanes(this.cameraEntity.getPosition(), this.cameraEntity.forward);
+      return;
+    }
     this.cancelViewTransition();
     this.updateCamera();
   }
@@ -208,12 +212,20 @@ export class ViewerControls {
     }
 
     this.transitioning = true;
-    const startedAt = performance.now();
+    let startedAt = performance.now();
+    let previousFrameAt = startedAt;
     const position = new Vec3();
     const lookTarget = new Vec3();
     const up = new Vec3();
     const tick = (now: number) => {
       if (this.destroyed || !this.transitioning) return;
+      if (!this.enabled) {
+        startedAt += now - previousFrameAt;
+        previousFrameAt = now;
+        this.transitionFrame = requestAnimationFrame(tick);
+        return;
+      }
+      previousFrameAt = now;
       const linear = Math.min(1, Math.max(0, (now - startedAt) / VIEW_TRANSITION_MS));
       const progress = 1 - Math.pow(1 - linear, 3);
       position.lerp(startPosition, destinationPosition, progress);

@@ -129,6 +129,9 @@ import { invertSelectionShortcutLabel, isInvertSelectionShortcut } from "./Selec
 import { InvertSelectionIcon } from "./InvertSelectionIcon";
 import { PreviewSortCoordinator } from "./PreviewSortCoordinator";
 import { PreviewEditPersistence } from "./PreviewEditPersistence";
+import { ModelTransformGizmo } from "./ModelTransformGizmo";
+import { modelPivotFromPly, rotateAroundModelCenter, type ModelPivot } from "./ModelTransformMath";
+import { readGizmoMode, saveGizmoMode, type GizmoMode } from "./GizmoPreferences";
 
 type ViewerMode = "adjust" | "preview";
 type ViewportPhase = "initializing" | "loading" | "mounting" | "ready" | "error";
@@ -154,6 +157,8 @@ interface SplatSceneApi {
   initializeCrop: (kind: "sphere" | "box", previous: GaussianCrop) => Exclude<GaussianCrop, null> | null;
   snapshotView: () => GaussianHtmlView;
   saveView: () => boolean;
+  modelPivot: () => ModelPivot | null;
+  finishGizmo: (cancel?: boolean) => void;
   /** Current view as top-down RGBA pixels, used to draw a reshoot guide. */
   /** Model-space point to image pixels, so the guide can circle the region. */
   exportVideo: (options: {
@@ -218,12 +223,15 @@ interface SplatSceneProps {
   deletedMask: Uint8Array;
   selectionMask: Uint8Array;
   editorMasksReady: boolean;
+  gizmoMode: GizmoMode;
+  interactionBlocked: boolean;
+  onGizmoDragging: (dragging: boolean, cancelled?: boolean) => void;
   onOrthographicViewChange: (view: GaussianOrthographicView | null) => void;
   onStatus: (status: ViewportStatus) => void;
   onAnimationStatus: (status: AnimationStatus) => void;
 }
 
-const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function LoadedSplatScene({ projectId, assetUrl, fileSize, transform, mode, tool, crop, deletedMask, selectionMask, editorMasksReady, onOrthographicViewChange, onStatus, onAnimationStatus }, ref) {
+const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function LoadedSplatScene({ projectId, assetUrl, fileSize, transform, mode, tool, crop, deletedMask, selectionMask, editorMasksReady, gizmoMode, interactionBlocked, onGizmoDragging, onOrthographicViewChange, onStatus, onAnimationStatus }, ref) {
   const { t } = useI18n();
   const app = useApp();
   const cameraRef = useRef<PcEntity>(null);
@@ -245,6 +253,17 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
   const animationComponentRef = useRef<GSplatComponent | null>(null);
   const animationEffectActiveRef = useRef(false);
   const robustLocalBoundsRef = useRef<BoundingBox | null>(null);
+  const gizmoRef = useRef<ModelTransformGizmo | null>(null);
+  const sceneReadyRef = useRef(false);
+  const gizmoStateRef = useRef({ mode, tool, gizmoMode, interactionBlocked });
+  gizmoStateRef.current = { mode, tool, gizmoMode, interactionBlocked };
+  const configureGizmo = useCallback(() => {
+    const state = gizmoStateRef.current;
+    gizmoRef.current?.configure(state.gizmoMode, sceneReadyRef.current && !appDestroyedRef.current
+      && !contextLostRef.current && !exportingRef.current && !state.interactionBlocked
+      && state.mode === "adjust" && state.tool === "transform");
+  }, []);
+  useEffect(configureGizmo, [configureGizmo, gizmoMode, interactionBlocked, mode, tool]);
   const editorStateRef = useRef({ crop, mode, tool, deletedMask, selectionMask });
   editorStateRef.current = { crop, mode, tool, deletedMask, selectionMask };
   app.scene.gsplatCentersEnabled = true;
@@ -329,6 +348,9 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
     appDestroyedRef.current = false;
     contextLostRef.current = false;
     const handle = app.on("destroy", () => {
+      sceneReadyRef.current = false;
+      gizmoRef.current?.destroy();
+      gizmoRef.current = null;
       persistViewRef.current?.();
       appDestroyedRef.current = true;
       controlsRef.current?.destroy();
@@ -350,6 +372,9 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
     const reportDeviceLost = () => {
       if (contextLostRef.current || appDestroyedRef.current) return;
       contextLostRef.current = true;
+      sceneReadyRef.current = false;
+      gizmoRef.current?.destroy(true);
+      gizmoRef.current = null;
       sortCoordinatorRef.current?.destroy();
       if (controlsRef.current) controlsRef.current.enabled = false;
       onOrthographicViewChange(null);
@@ -521,6 +546,7 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
     entity.setLocalScale(transform.scale, transform.scale, transform.scale);
     syncSceneBounds();
     applyEditorUniforms();
+    gizmoRef.current?.sync();
   }, [applyEditorUniforms, syncSceneBounds, transform]);
 
   const fit = useCallback((resetDirection = false) => {
@@ -563,6 +589,7 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
     component.setParameter("uOoosplatShowSelection", 0);
     component.setParameter("uOoosplatCropInverted", 0);
     let ready = false;
+    sceneReadyRef.current = false;
     const persistView = () => {
       if (ready && !exportingRef.current && !contextLostRef.current) savePreviewView(projectId, controls.snapshot());
     };
@@ -600,6 +627,32 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
     orbitAxisGuide.setVisible(modeRef.current === "preview");
     orbitAxisGuideRef.current = orbitAxisGuide;
     syncSceneBounds();
+    const pivot = modelPivotFromPly(robustLocalBoundsRef.current!.center);
+    const currentEditor = () => {
+      const state = useGaussianTransformStore.getState();
+      return !appDestroyedRef.current && state.descriptor?.projectId === projectId ? state : null;
+    };
+    const gizmo = new ModelTransformGizmo(app, cameraRef.current.camera!, pivot, {
+      current: () => currentEditor()?.transform ?? null,
+      beforeStart: () => {
+        if (!currentEditor()) return;
+        if (document.activeElement instanceof HTMLInputElement) document.activeElement.blur();
+        currentEditor()?.commitTransaction();
+      },
+      begin: () => { currentEditor()?.beginTransaction(); controls.enabled = false; },
+      change: next => currentEditor()?.setTransformLive(next),
+      finish: cancel => {
+        if (cancel) currentEditor()?.cancelTransaction();
+        else currentEditor()?.commitTransaction();
+        if (cancel && currentEditor()) onGizmoDragging(false, true);
+      },
+      dragging: active => {
+        controls.enabled = !active && sceneReadyRef.current && !gizmoStateRef.current.interactionBlocked
+          && !exportingRef.current && !contextLostRef.current && !appDestroyedRef.current;
+        if (currentEditor()) onGizmoDragging(active);
+      },
+    });
+    gizmoRef.current = gizmo;
     applyEditorUniforms();
     setAnimationUniforms(modeRef.current === "preview", animationElapsedRef.current);
 
@@ -624,7 +677,9 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
       await sortCoordinatorRef.current!.waitForFrame(cameraRef.current!.camera!, initialization.signal, t("video.sortTimeout"));
       initialization.signal.throwIfAborted();
       ready = true;
+      sceneReadyRef.current = true;
       controls.enabled = true;
+      configureGizmo();
       if (modeRef.current === "preview") replay();
       onStatus({ phase: "ready", progress: 1, error: null, renderer });
     })().catch((error: unknown) => {
@@ -635,6 +690,9 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
 
     return () => {
       initialization.abort();
+      sceneReadyRef.current = false;
+      gizmo.destroy();
+      if (gizmoRef.current === gizmo) gizmoRef.current = null;
       updateHandle.off();
       persistView();
       if (!appDestroyedRef.current && cameraRef.current?.camera) cameraRef.current.camera.enabled = false;
@@ -670,7 +728,7 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
       animationEffectActiveRef.current = false;
       robustLocalBoundsRef.current = null;
     };
-  }, [app, applyEditorUniforms, editorMasksReady, fit, onOrthographicViewChange, onStatus, preparedAsset, projectId, renderer, replay, reportAnimation, setAnimationUniforms, syncSceneBounds]);
+  }, [app, applyEditorUniforms, configureGizmo, editorMasksReady, fit, onGizmoDragging, onOrthographicViewChange, onStatus, preparedAsset, projectId, renderer, replay, reportAnimation, setAnimationUniforms, syncSceneBounds]);
 
   const exportVideo = useCallback(async ({
     signal,
@@ -726,6 +784,7 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
     });
 
     exportingRef.current = true;
+    configureGizmo();
     controls.enabled = false;
     gridRef.current?.setVisible(false);
     orbitAxisGuideRef.current?.setVisible(false);
@@ -772,6 +831,7 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
       });
     } finally {
       exportingRef.current = false;
+      configureGizmo();
       animationElapsedRef.current = elapsed;
       cameraEntity.camera.renderTarget = previousRenderTarget;
       cameraEntity.camera.fov = previousFov;
@@ -786,7 +846,7 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
       reportAnimation(elapsed, true);
       app.renderNextFrame = true;
     }
-  }, [app, reportAnimation, setAnimationUniforms]);
+  }, [app, configureGizmo, reportAnimation, setAnimationUniforms]);
 
   const selectRectangle = useCallback((rectangle: SelectionRectangle, selectionMode: RectangleSelectionMode) => {
     const selection = selectionRef.current;
@@ -865,7 +925,9 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
     const controls = controlsRef.current;
     return Boolean(controls && !exportingRef.current && !contextLostRef.current && savePreviewView(projectId, controls.snapshot()));
   }, [projectId]);
-  useImperativeHandle(ref, () => ({ replay, exportVideo, snapshotView, saveView, selectRectangle, invertSelection, freezeCrop, deactivateCrop, alignView, initializeCrop }), [alignView, deactivateCrop, exportVideo, freezeCrop, initializeCrop, invertSelection, replay, saveView, selectRectangle, snapshotView]);
+  const modelPivot = useCallback(() => robustLocalBoundsRef.current ? modelPivotFromPly(robustLocalBoundsRef.current.center) : null, []);
+  const finishGizmo = useCallback((cancel = false) => gizmoRef.current?.finish(cancel), []);
+  useImperativeHandle(ref, () => ({ replay, exportVideo, snapshotView, saveView, modelPivot, finishGizmo, selectRectangle, invertSelection, freezeCrop, deactivateCrop, alignView, initializeCrop }), [alignView, deactivateCrop, exportVideo, finishGizmo, freezeCrop, initializeCrop, invertSelection, modelPivot, replay, saveView, selectRectangle, snapshotView]);
 
   return <>
     <PreviewCamera ref={cameraRef} />
@@ -930,6 +992,8 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
   const exportBusyRef = useRef(false);
   const viewportElementRef = useRef<HTMLDivElement | null>(null);
   const [mode, setMode] = useState<ViewerMode>("adjust");
+  const [gizmoMode, setGizmoMode] = useState<GizmoMode>(readGizmoMode);
+  const [gizmoDragging, setGizmoDragging] = useState(false);
   const [orthographicView, setOrthographicView] = useState<GaussianOrthographicView | null>(null);
   const [selectionDrag, setSelectionDrag] = useState<null | { pointerId: number; startX: number; startY: number; x: number; y: number; selectionMode: RectangleSelectionMode }>(null);
   const [viewport, setViewport] = useState<ViewportStatus>(INITIAL_VIEWPORT);
@@ -970,7 +1034,13 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
 
   const onStatus = useCallback((status: ViewportStatus) => setViewport(status), []);
   const onAnimationStatus = useCallback((status: AnimationStatus) => setAnimationStatus(status), []);
-  const busy = savingEdits || navigationSaving || pendingNavigation !== null || htmlBusy || htmlConfirm || cropFreezing || gaussianExporting || !["idle", "completed", "error"].includes(videoPhase);
+  const operationBusy = savingEdits || navigationSaving || pendingNavigation !== null || htmlBusy || htmlConfirm || cropFreezing || gaussianExporting || !["idle", "completed", "error"].includes(videoPhase);
+  const busy = operationBusy || gizmoDragging;
+  const interactionBlocked = operationBusy || viewport.phase !== "ready" || cropFreezeError !== null;
+  const onGizmoDragging = useCallback((dragging: boolean, cancelled = false) => {
+    setGizmoDragging(dragging);
+    if (cancelled) void persistenceRef.current?.flush().catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     const projectId = store.descriptor?.projectId;
@@ -1090,6 +1160,7 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
   }, [onDisposed, previewSessionId, store.descriptor?.projectId]);
 
   const flushEdits = async (retry = false) => {
+    sceneApiRef.current?.finishGizmo();
     const projectId = useGaussianTransformStore.getState().descriptor?.projectId;
     if (document.activeElement instanceof HTMLInputElement) document.activeElement.blur();
     await selectionQueue.current;
@@ -1294,6 +1365,9 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
 
   const switchTool = async (tool: GaussianEditorTool) => {
     if (busy || tool === store.tool) return;
+    sceneApiRef.current?.finishGizmo();
+    if (document.activeElement instanceof HTMLInputElement) document.activeElement.blur();
+    useGaussianTransformStore.getState().commitTransaction();
     const current = useGaussianTransformStore.getState();
     if ((current.tool === "sphere" || current.tool === "box") && current.editing.crop) {
       current.commitCropTransaction();
@@ -1320,6 +1394,21 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
   const alignView = (view: GaussianOrthographicView) => {
     setOrthographicView(view);
     sceneApiRef.current?.alignView(view);
+  };
+
+  const changeGizmoMode = (next: GizmoMode) => {
+    sceneApiRef.current?.finishGizmo();
+    if (document.activeElement instanceof HTMLInputElement) document.activeElement.blur();
+    useGaussianTransformStore.getState().commitTransaction();
+    setGizmoMode(next); saveGizmoMode(next);
+  };
+  const changeRotation = (axis: 0 | 1 | 2, value: number) => {
+    const current = useGaussianTransformStore.getState();
+    const pivot = sceneApiRef.current?.modelPivot();
+    if (!pivot) return;
+    const rotation = [...current.transform.rotation] as GaussianTransform["rotation"];
+    rotation[axis] = value;
+    current.setTransformLive(rotateAroundModelCenter(current.transform, pivot, rotation));
   };
 
   const invertSelection = useCallback(() => {
@@ -1469,9 +1558,13 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
         <p>{mode === "adjust" ? t("viewer.adjustHint") : t("viewer.animationHint")}</p>
       </div>
       <div className="preview-input-hints" aria-label={t("viewer.inputAria")}>
-        <span><Orbit size={15} /><kbd>{mode === "adjust" && store.tool === "rectangle" ? t("viewer.middle") : t("viewer.left")}</kbd>{t("viewer.rotate")}</span>
+        <span><Orbit size={15} /><kbd>{mode === "adjust" && store.tool === "rectangle" ? t("viewer.middle") : t("viewer.left")}</kbd>{mode === "adjust" && store.tool === "transform" && gizmoMode !== "off" ? t("viewer.orbitBlank") : t("viewer.rotate")}</span>
         <span><Move size={15} /><kbd>{t("viewer.right")}</kbd>{t("viewer.drag")}</span>
         <span><ZoomIn size={15} /><kbd>{t("viewer.wheel")}</kbd>{t("viewer.zoom")}</span>
+        {mode === "adjust" && store.tool === "transform" && gizmoMode !== "off" && <>
+          <span><Move size={15} /><kbd>{t("viewer.left")}</kbd>{t(gizmoMode === "translate" ? "viewer.gizmoMove" : "viewer.gizmoRotate")}</span>
+          <span><X size={15} /><kbd>Esc</kbd>{t("viewer.cancelTransform")}</span>
+        </>}
         {mode === "adjust" && store.tool === "rectangle" && <>
           <span><RectangleHorizontal size={15} /><kbd>{t("viewer.left")}</kbd>{t("viewer.select")}</span>
           <span><Plus size={15} /><kbd>Shift</kbd>{t("viewer.add")}</span>
@@ -1511,9 +1604,9 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
     </div>
     {pipelineRunning && <div className="preview-resource-note">{t("viewer.resourceNote")}</div>}
     <div className="preview-editor">
-      <div ref={viewportElementRef} inert={busy} className={`gaussian-viewport tool-${store.tool}`} onPointerDownCapture={rectanglePointerDown} onPointerMoveCapture={rectanglePointerMove} onPointerUpCapture={rectanglePointerEnd} onPointerCancelCapture={rectanglePointerEnd}>
+      <div ref={viewportElementRef} inert={operationBusy} className={`gaussian-viewport tool-${store.tool}`} onPointerDownCapture={rectanglePointerDown} onPointerMoveCapture={rectanglePointerMove} onPointerUpCapture={rectanglePointerEnd} onPointerCancelCapture={rectanglePointerEnd}>
         <Application key={`${store.descriptor.projectId}-${rendererRevision}`} className="gaussian-canvas" deviceTypes={previewDeviceTypes()} graphicsDeviceOptions={{ antialias: false, alpha: false, preserveDrawingBuffer: true, powerPreference: "high-performance" }}>
-          <SplatScene ref={sceneApiRef} projectId={store.descriptor.projectId} assetUrl={previewAssetUrl} fileSize={store.descriptor.fileSize} splatCount={store.descriptor.splatCount} transform={store.transform} mode={mode} tool={store.tool} crop={store.editing.crop} deletedMask={store.deletedMask} selectionMask={store.selectionMask} editorMasksReady={!store.descriptor.editMaskAssetUrl || loadedMaskKey === `${store.descriptor.projectId}:${store.descriptor.editMaskAssetUrl}`} onOrthographicViewChange={setOrthographicView} onStatus={onStatus} onAnimationStatus={onAnimationStatus} />
+          <SplatScene ref={sceneApiRef} projectId={store.descriptor.projectId} assetUrl={previewAssetUrl} fileSize={store.descriptor.fileSize} splatCount={store.descriptor.splatCount} transform={store.transform} mode={mode} tool={store.tool} crop={store.editing.crop} deletedMask={store.deletedMask} selectionMask={store.selectionMask} editorMasksReady={!store.descriptor.editMaskAssetUrl || loadedMaskKey === `${store.descriptor.projectId}:${store.descriptor.editMaskAssetUrl}`} gizmoMode={gizmoMode} interactionBlocked={interactionBlocked} onGizmoDragging={onGizmoDragging} onOrthographicViewChange={setOrthographicView} onStatus={onStatus} onAnimationStatus={onAnimationStatus} />
         </Application>
         {mode === "preview" && <div ref={captureGuideRef} className={`portrait-capture-guide orientation-${orientation}`} style={guideSize} aria-hidden="true">
           <div className="portrait-frame-label"><span>{gaussianVideoDimensions(orientation).width} × {gaussianVideoDimensions(orientation).height}</span><span>30 FPS</span></div>
@@ -1525,7 +1618,7 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
         {cropFreezing && <div className="viewport-overlay"><LoaderCircle className="spin" size={22} /><strong>{t("viewer.freezing")}</strong><span>{t("viewer.wait")}</span></div>}
         {cropFreezeError && !cropFreezing && <div className="viewport-overlay error"><strong>{t("viewer.freezeFailed")}</strong><p>{cropFreezeError}</p><div className="viewport-error-actions"><button type="button" onClick={() => setCropFreezeError(null)}>{t("viewer.backToEdit")}</button></div></div>}
         {selectionDrag && <div className={`rectangle-selection-box mode-${selectionDrag.selectionMode}`} style={selectionRectStyle} aria-hidden="true" />}
-        {mode === "adjust" && store.tool === "transform" && <TransformPanel transform={store.transform} onBegin={store.beginTransaction} onChange={store.setTransformLive} onCommit={store.commitTransaction} />}
+        {mode === "adjust" && store.tool === "transform" && <TransformPanel transform={store.transform} onBegin={store.beginTransaction} onChange={store.setTransformLive} onCommit={store.commitTransaction} onRotationChange={changeRotation} gizmoMode={gizmoMode} onGizmoModeChange={changeGizmoMode} disabled={busy || viewport.phase !== "ready"} />}
         {mode === "adjust" && (store.tool === "sphere" || store.tool === "box") && <SelectionPanel crop={store.editing.crop} kind={store.tool} onBegin={store.beginCropTransaction} onChange={store.setCropLive} onCommit={store.commitCropTransaction} onEnable={() => { const tool = useGaussianTransformStore.getState().tool; if (tool === "sphere" || tool === "box") enableCrop(tool); }} />}
         {mode === "preview" && <div className="animation-hud">
           <span className={`animation-pulse phase-${animationStatus.phase}`} />

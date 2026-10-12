@@ -70,6 +70,7 @@ interface GaussianTransformState {
   beginTransaction: () => void;
   setTransformLive: (transform: GaussianTransform) => void;
   commitTransaction: () => void;
+  cancelTransaction: () => void;
   beginCropTransaction: () => void;
   setCropLive: (crop: GaussianCrop) => void;
   commitCropTransaction: () => void;
@@ -140,6 +141,10 @@ export const useGaussianTransformStore = create<GaussianTransformState>((set, ge
     const state = get(); const start = state.transactionStart;
     if (!start || equalTransform(start, state.transform)) { set({ transactionStart: null }); return; }
     set({ history: pushHistory(state.history, { kind: "transform", before: start, after: cloneTransform(state.transform), bytes: 112 }), future: [], transactionStart: null, revision: state.revision + 1, saveState: "dirty" });
+  },
+  cancelTransaction: () => {
+    const start = get().transactionStart;
+    if (start) set({ transform: cloneTransform(start), transactionStart: null });
   },
   beginCropTransaction: () => { if (get().cropTransactionStart === undefined) set({ cropTransactionStart: cloneCrop(get().editing.crop) }); },
   setCropLive: (crop) => set((state) => ({ editing: { ...state.editing, crop: cloneCrop(crop) }, saveState: "dirty" })),
