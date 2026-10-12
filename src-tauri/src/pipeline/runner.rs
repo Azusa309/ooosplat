@@ -4506,9 +4506,10 @@ async fn remove_bridge_outputs(
 /// Training steps for a reshoot that starts from the source project's model.
 ///
 /// On a DTU scan6 defect benchmark (31 old + 10 reshoot views, 3 runs each),
-/// warm start with 3000 steps matched or beat a full 15000-step retrain on
-/// held-out reshoot-region views (23.5-23.8 dB vs 22.6-23.6 dB) in ~34 s
-/// instead of ~125 s; 1500 steps lost ~0.3-0.5 dB.
+/// warm start with 3000 steps matched a full 15000-step retrain on held-out
+/// reshoot-region views (23.5-23.8 dB vs 22.6-23.6 dB) in ~34 s instead of
+/// ~125 s; 1500 steps lost ~0.3-0.5 dB. 3000 is the shortest budget tested
+/// that held quality, not a tuned optimum.
 const RESHOOT_WARM_START_STEPS: usize = 3_000;
 
 fn resolve_reshoot_warm_start_preset(
@@ -4517,8 +4518,7 @@ fn resolve_reshoot_warm_start_preset(
     resolved.preset.total_steps = resolved
         .preset
         .total_steps
-        .min(RESHOOT_WARM_START_STEPS)
-        .max(1);
+        .clamp(1, RESHOOT_WARM_START_STEPS);
     if let Some(mut densification) = resolved.preset.densification {
         densification.growth_stop_iter = densification
             .growth_stop_iter
