@@ -25,7 +25,7 @@ Windows and the Apple Silicon macOS Alpha provide FFmpeg, FFprobe, COLMAP, and B
 
 See the [OOOSplat Roadmap](ROADMAP_EN.md) for planned work.
 
-> 0.6.0 adds multi-task management, transparent-media support, landscape video and offline HTML exports, plus upgrades to COLMAP, Auto Optimize, and training monitoring.
+> 0.6.1 adds update notifications, preview movement axes, rotation rings, an inverse-selection shortcut, and saved-view restoration, with improved Gaussian selection and edit saving. It enables video loop detection across all three Auto Optimize presets, fixes preview ordering and Planner effectiveness metrics, and reduces UI update overhead during generation.
 
 ## Why OOOSplat
 

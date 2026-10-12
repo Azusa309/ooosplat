@@ -25,7 +25,7 @@ Windows 和 Apple Silicon macOS Alpha 均随应用提供 FFmpeg、FFprobe、COLM
 
 查看 [OOOSplat Roadmap](ROADMAP.md) 了解后续规划。
 
-> 0.6.0 加入多任务管理、透明素材支持、横屏视频与离线 HTML 导出，并升级 COLMAP、自动优化和训练监控。
+> 0.6.1 加入版本更新提醒、预览移动轴、旋转环、反选快捷键与视角恢复，改进 Gaussian 选择和编辑保存流程；自动优化三档启用视频闭环检测，并修复预览排序与 Planner 效果统计，减少生成期间的界面刷新负担。
 
 ## 核心优势
 
