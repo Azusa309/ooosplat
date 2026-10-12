@@ -6,12 +6,12 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat" alt="License: Apache-2.0"></a>
-  <a href="https://github.com/ooolabdev/ooosplat/releases/tag/0.6.0"><img src="https://img.shields.io/badge/release-v0.6.0-blue?style=flat" alt="Release: v0.6.0"></a>
+  <a href="https://github.com/ooolabdev/ooosplat/releases/tag/0.6.1"><img src="https://img.shields.io/badge/release-v0.6.1-blue?style=flat" alt="Release: v0.6.1"></a>
   <a href="#system-requirements"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue?style=flat" alt="Platforms: Windows, Linux, macOS"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/ooolabdev/ooosplat/releases/tag/0.6.0"><strong>Download</strong></a> | <a href="README.md">中文</a> | <a href="README_EN.md">English</a>
+  <a href="https://github.com/ooolabdev/ooosplat/releases/tag/0.6.1"><strong>Download</strong></a> | <a href="README.md">中文</a> | <a href="README_EN.md">English</a>
 </p>
 
 <p align="center">
@@ -129,10 +129,10 @@ sudo apt install -y \
 
 Install a working Vulkan driver for the graphics adapter, such as the proprietary NVIDIA driver or Mesa for AMD/Intel. Bundled COLMAP uses CUDA/Caspar on compatible NVIDIA devices and CPU/Ceres otherwise; Brush selects its graphics backend independently. Fully CPU-only software Vulkan has not yet been validated end to end.
 
-After downloading the `OOOSplat-0.6.0-x64-linux` Artifact from the main-branch GitHub Actions run, install it with:
+After downloading the `OOOSplat-0.6.1-x64-linux` Artifact from the main-branch GitHub Actions run, install it with:
 
 ```bash
-sudo apt install ./OOOSplat-0.6.0-x64-linux.deb
+sudo apt install ./OOOSplat-0.6.1-x64-linux.deb
 ```
 
 The `.deb` installs only FFmpeg/FFprobe through Ubuntu's package manager; pinned COLMAP and Brush runtimes are included.
@@ -141,7 +141,7 @@ The `.deb` installs only FFmpeg/FFprobe through Ubuntu's package manager; pinned
 
 Sample media: [Download from Quark Drive](https://pan.quark.cn/s/1dde892a1324) to test or try the generation workflow.
 
-1. On Windows, run `OOOSplat-0.6.0-x64-windows.exe`. On an Apple Silicon Mac, open `OOOSplat-0.6.0-arm64-macos.dmg` and drag OOOSplat into Applications. On Ubuntu 24.04, run `sudo apt install ./OOOSplat-0.6.0-x64-linux.deb`.
+1. On Windows, run `OOOSplat-0.6.1-x64-windows.exe`. On an Apple Silicon Mac, open `OOOSplat-0.6.1-arm64-macos.dmg` and drag OOOSplat into Applications. On Ubuntu 24.04, run `sudo apt install ./OOOSplat-0.6.1-x64-linux.deb`.
 2. Start OOOSplat and confirm that the bundled engine status in the top bar is healthy. Use the `EN / 中文` action in the upper-right corner to switch the interface language instantly.
 3. Select a draft under “Task List → New Tasks,” or choose Add. In the left “Create New Task” panel, choose Video or Images and select a video file or image-sequence folder.
 4. Choose the projects root; OOOSplat remembers the last location.
@@ -230,7 +230,7 @@ What is sent:
 | Field | Description |
 | --- | --- |
 | Install ID | A random UUID generated on first launch. No hardware serial, MAC address, or device fingerprint is read |
-| App version, OS, CPU architecture | For example `0.6.0` / `windows` / `x86_64` |
+| App version, OS, CPU architecture | For example `0.6.1` / `windows` / `x86_64` |
 | Event name | `daily_active`, `generation_started`, `generation_completed`, `generation_failed`, `pipeline_stage_completed`, `planner_evaluation`. `daily_active` is sent at most once a day, and once more on the day the app version changes |
 | Quality preset and input type | Enumerated values such as `balanced` / `video`; an image-sequence input reports `images` |
 | Stage and total durations | Milliseconds |
@@ -362,7 +362,7 @@ npm run package:windows
 The NSIS installer is written to:
 
 ```text
-dist-artifacts\OOOSplat-0.6.0-x64-windows.exe
+dist-artifacts\OOOSplat-0.6.1-x64-windows.exe
 ```
 
 Run `npm run setup:engines` before the first build. Tauri's `beforeBuildCommand` automatically runs the engine checks and frontend production build, but it does not access the network implicitly during packaging.

@@ -6,12 +6,12 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat" alt="License: Apache-2.0"></a>
-  <a href="https://github.com/ooolabdev/ooosplat/releases/tag/0.6.0"><img src="https://img.shields.io/badge/release-v0.6.0-blue?style=flat" alt="Release: v0.6.0"></a>
+  <a href="https://github.com/ooolabdev/ooosplat/releases/tag/0.6.1"><img src="https://img.shields.io/badge/release-v0.6.1-blue?style=flat" alt="Release: v0.6.1"></a>
   <a href="#系统要求"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue?style=flat" alt="Platforms: Windows, Linux, macOS"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/ooolabdev/ooosplat/releases/tag/0.6.0"><strong>下载</strong></a> | <a href="README.md">中文</a> | <a href="README_EN.md">English</a>
+  <a href="https://github.com/ooolabdev/ooosplat/releases/tag/0.6.1"><strong>下载</strong></a> | <a href="README.md">中文</a> | <a href="README_EN.md">English</a>
 </p>
 
 <p align="center">
@@ -129,10 +129,10 @@ sudo apt install -y \
 
 请为显卡安装可用的 Vulkan 驱动（例如 NVIDIA 专有驱动，或 AMD/Intel 的 Mesa 驱动）。内置 COLMAP 在兼容 NVIDIA 设备上使用 CUDA/Caspar，否则使用 CPU/Ceres；Brush 独立选择图形后端。完全 CPU-only 的软件 Vulkan 后端尚未完成端到端验证。
 
-从 main 分支 GitHub Actions 下载 `OOOSplat-0.6.0-x64-linux` Artifact 后，可执行：
+从 main 分支 GitHub Actions 下载 `OOOSplat-0.6.1-x64-linux` Artifact 后，可执行：
 
 ```bash
-sudo apt install ./OOOSplat-0.6.0-x64-linux.deb
+sudo apt install ./OOOSplat-0.6.1-x64-linux.deb
 ```
 
 `.deb` 仅通过 Ubuntu 包管理器安装 FFmpeg/FFprobe；锁定的 COLMAP 和 Brush 已包含在安装包中。
@@ -141,7 +141,7 @@ sudo apt install ./OOOSplat-0.6.0-x64-linux.deb
 
 测试素材：[夸克网盘下载](https://pan.quark.cn/s/1dde892a1324)，可用于测试或体验生成流程。
 
-1. Windows 运行 `OOOSplat-0.6.0-x64-windows.exe`；Apple Silicon Mac 打开 `OOOSplat-0.6.0-arm64-macos.dmg` 并将 OOOSplat 拖入“应用程序”；Ubuntu 24.04 使用 `sudo apt install ./OOOSplat-0.6.0-x64-linux.deb`。
+1. Windows 运行 `OOOSplat-0.6.1-x64-windows.exe`；Apple Silicon Mac 打开 `OOOSplat-0.6.1-arm64-macos.dmg` 并将 OOOSplat 拖入“应用程序”；Ubuntu 24.04 使用 `sudo apt install ./OOOSplat-0.6.1-x64-linux.deb`。
 2. 启动 OOOSplat，确认顶栏中的内置引擎状态正常；可使用右上角的 `EN / 中文` 按钮即时切换界面语言。
 3. 在右侧“任务列表 → 新任务”中选择一个草稿，或点击“新增”。在左侧“创建新任务”的输入类型下拉栏选择“视频”或“图片”，再选择视频文件或图片序列文件夹。
 4. 选择项目根目录；程序会记住上次使用的位置。
@@ -232,7 +232,7 @@ OOOSplat 默认开启匿名使用统计，用于了解稳定性和各阶段耗�
 | 字段 | 说明 |
 | --- | --- |
 | 安装 ID | 首次启动生成的随机 UUID，不读取硬件序列号、MAC 地址或设备指纹 |
-| 应用版本、操作系统、CPU 架构 | 例如 `0.6.0` / `windows` / `x86_64` |
+| 应用版本、操作系统、CPU 架构 | 例如 `0.6.1` / `windows` / `x86_64` |
 | 事件名 | `daily_active`、`generation_started`、`generation_completed`、`generation_failed`、`pipeline_stage_completed`、`planner_evaluation`。`daily_active` 每天最多一次，应用升级后当天会再报一次 |
 | 质量档位与输入类型 | 枚举值，例如 `balanced` / `video`；图片序列输入报 `images` |
 | 阶段耗时与总耗时 | 毫秒 |
@@ -364,7 +364,7 @@ npm run package:windows
 NSIS 安装包输出到：
 
 ```text
-dist-artifacts\OOOSplat-0.6.0-x64-windows.exe
+dist-artifacts\OOOSplat-0.6.1-x64-windows.exe
 ```
 
 首次构建前必须运行 `npm run setup:engines`。`beforeBuildCommand` 会自动执行引擎校验和前端生产构建，但不会在打包过程中隐式访问网络。
