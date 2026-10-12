@@ -1,9 +1,13 @@
-# OOOSplat
-
-[中文](README.md) | [English](README_EN.md)
+<h1 align="center">OOOSplat</h1>
 
 <p align="center">
-  <img src="assets/readme-logo.svg" alt="OOOSplat Logo" width="180">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat" alt="License: Apache-2.0"></a>
+  <a href="https://github.com/ooolabdev/ooosplat/releases/tag/0.6.0"><img src="https://img.shields.io/badge/release-v0.6.0-blue?style=flat" alt="Release: v0.6.0"></a>
+  <a href="#系统要求"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue?style=flat" alt="Platforms: Windows, Linux, macOS"></a>
+</p>
+
+<p align="center">
+  <a href="README.md">中文</a> | <a href="README_EN.md">English</a>
 </p>
 
 <p align="center">
@@ -12,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ooolabdev/ooosplat/releases/tag/0.6.0"><strong>⬇️ 下载最新正式版 OOOSplat 0.6.0（Windows / macOS / Ubuntu）</strong></a>
+  <a href="https://github.com/ooolabdev/ooosplat/releases/tag/0.6.0"><strong>下载</strong></a>
 </p>
 
 OOOSplat 是一款将普通环绕拍摄视频或图片序列一键转换为 3D Gaussian Splatting 的本地桌面应用。选择素材、项目目录和质量档位后，应用会自动完成画面准备、相机重建、训练与 PLY 发布，并可直接预览、调整和导出结果。

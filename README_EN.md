@@ -1,9 +1,13 @@
-# OOOSplat
-
-[中文](README.md) | [English](README_EN.md)
+<h1 align="center">OOOSplat</h1>
 
 <p align="center">
-  <img src="assets/readme-logo.svg" alt="OOOSplat Logo" width="180">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat" alt="License: Apache-2.0"></a>
+  <a href="https://github.com/ooolabdev/ooosplat/releases/tag/0.6.0"><img src="https://img.shields.io/badge/release-v0.6.0-blue?style=flat" alt="Release: v0.6.0"></a>
+  <a href="#system-requirements"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue?style=flat" alt="Platforms: Windows, Linux, macOS"></a>
+</p>
+
+<p align="center">
+  <a href="README.md">中文</a> | <a href="README_EN.md">English</a>
 </p>
 
 <p align="center">
@@ -12,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ooolabdev/ooosplat/releases/tag/0.6.0"><strong>⬇️ Download the latest release, OOOSplat 0.6.0, for Windows, macOS, or Ubuntu</strong></a>
+  <a href="https://github.com/ooolabdev/ooosplat/releases/tag/0.6.0"><strong>Download</strong></a>
 </p>
 
 OOOSplat is a local desktop application that turns an ordinary orbit video or image sequence into a 3D Gaussian Splatting project in one workflow. Choose source media, a project directory, and a quality preset, and OOOSplat automatically handles image preparation, camera reconstruction, training, PLY publishing, preview, adjustment, and export.
