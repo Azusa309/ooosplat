@@ -40,6 +40,7 @@ const requiredFiles = [
   "licenses/NVIDIA-CUDA-Runtime.txt",
   "licenses/Brush-LICENSE.txt",
   "licenses/PlayCanvas-MIT.txt",
+  "licenses/Niantic-SPZ-MIT.txt",
   "licenses/Mediabunny-MPL-2.0.txt",
   "engines/manifest.json",
   "engines/manifest.linux.json",
@@ -87,6 +88,7 @@ for (const resource of [
   "../licenses/NVIDIA-CUDA-Runtime.txt",
   "../licenses/Brush-LICENSE.txt",
   "../licenses/PlayCanvas-MIT.txt",
+  "../licenses/Niantic-SPZ-MIT.txt",
   "../licenses/Mediabunny-MPL-2.0.txt",
 ]) {
   assert(Object.hasOwn(tauri.bundle?.resources ?? {}, resource), `Tauri resources are missing ${resource}.`);
@@ -228,7 +230,7 @@ for (const marker of [
   assertContains(thirdParty, marker, "THIRD_PARTY_NOTICES.txt");
 }
 
-for (const component of ["PlayCanvas Engine", "PlayCanvas React", "PlayCanvas splat-transform (adapted algorithm)", "SuperSplat selection workflow (adapted algorithm)"]) {
+for (const component of ["PlayCanvas Engine", "PlayCanvas React", "PlayCanvas splat-transform", "Niantic SPZ / @adobe/spz", "SuperSplat selection workflow (adapted algorithm)"]) {
   assertContains(thirdParty, component, "THIRD_PARTY_NOTICES.txt");
 }
 assertContains(thirdParty, "licenses/PlayCanvas-MIT.txt", "THIRD_PARTY_NOTICES.txt");

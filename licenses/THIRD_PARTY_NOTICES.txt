@@ -101,15 +101,24 @@ License: MIT
 License text: licenses/PlayCanvas-MIT.txt
 Upstream source: https://github.com/playcanvas/react
 
-PlayCanvas splat-transform (adapted algorithm)
-----------------------------------------------
-Version referenced: 3.3.0
-Use: The Rust non-destructive PLY exporter adapts the quaternion, log-scale,
-     and real spherical-harmonics rotation behavior from bake-transform and
-     rotate-sh. The Node.js package and CLI are not bundled at runtime.
+PlayCanvas splat-transform
+--------------------------
+Version: 3.10.1
+Use: Bundled in the dedicated browser worker for inspecting and converting
+     imported PLY, SOG, SPZ, SPLAT, and KSPLAT models to canonical PLY. The
+     Rust non-destructive exporter also adapts quaternion, log-scale, and
+     real spherical-harmonics rotation behavior from this project.
 License: MIT
 License text: licenses/PlayCanvas-MIT.txt
-Upstream source: https://github.com/playcanvas/splat-transform/tree/v3.3.0
+Upstream source: https://github.com/playcanvas/splat-transform/tree/v3.10.1
+
+Niantic SPZ / @adobe/spz
+------------------------
+Version: 0.2.3
+Use: SPZ decoding dependency of PlayCanvas splat-transform.
+License: MIT (license file distributed by the package)
+License text: licenses/Niantic-SPZ-MIT.txt
+Upstream source: https://github.com/nianticlabs/spz
 
 SuperSplat selection workflow (adapted algorithm)
 -------------------------------------------------

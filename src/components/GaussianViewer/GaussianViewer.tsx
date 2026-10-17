@@ -66,7 +66,9 @@ import {
   exportTransformedGaussian,
   onGaussianExportProgress,
   revealFile,
+  readGaussianPreviewChunk,
 } from "../../lib/backend";
+import { ownedBinaryChunk } from "../../lib/binaryChunk";
 import { previewAssetUrl as withPreviewAssetRevision } from "../../lib/previewAssetUrl";
 import { getCurrentLocale, translate, useI18n, type TranslationKey } from "../../i18n";
 import { useGaussianTransformStore } from "../../stores/gaussianTransformStore";
@@ -132,6 +134,7 @@ import { PreviewEditPersistence } from "./PreviewEditPersistence";
 import { ModelTransformGizmo } from "./ModelTransformGizmo";
 import { modelPivotFromPly, rotateAroundModelCenter, type ModelPivot } from "./ModelTransformMath";
 import { readGizmoMode, saveGizmoMode, type GizmoMode } from "./GizmoPreferences";
+import { PlyExportDialog, type PlyExportDialogState } from "./PlyExportDialog";
 
 type ViewerMode = "adjust" | "preview";
 type ViewportPhase = "initializing" | "loading" | "mounting" | "ready" | "error";
@@ -215,6 +218,7 @@ interface SplatSceneProps {
   projectId: string;
   assetUrl: string;
   fileSize: number;
+  readToken?: string | null;
   splatCount: number;
   transform: GaussianTransform;
   mode: ViewerMode;
@@ -231,7 +235,7 @@ interface SplatSceneProps {
   onAnimationStatus: (status: AnimationStatus) => void;
 }
 
-const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function LoadedSplatScene({ projectId, assetUrl, fileSize, transform, mode, tool, crop, deletedMask, selectionMask, editorMasksReady, gizmoMode, interactionBlocked, onGizmoDragging, onOrthographicViewChange, onStatus, onAnimationStatus }, ref) {
+const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function LoadedSplatScene({ projectId, assetUrl, fileSize, readToken, transform, mode, tool, crop, deletedMask, selectionMask, editorMasksReady, gizmoMode, interactionBlocked, onGizmoDragging, onOrthographicViewChange, onStatus, onAnimationStatus }, ref) {
   const { t } = useI18n();
   const app = useApp();
   const cameraRef = useRef<PcEntity>(null);
@@ -274,10 +278,18 @@ const LoadedSplatScene = forwardRef<SplatSceneApi, SplatSceneProps>(function Loa
     sortCoordinatorRef.current = coordinator;
     return () => { coordinator.destroy(); if (sortCoordinatorRef.current === coordinator) sortCoordinatorRef.current = null; };
   }, [app]);
-  const rangeSource = useMemo(
-    () => shouldUseSplatRange(fileSize) ? createSplatRangeSource(assetUrl, fileSize) : null,
-    [assetUrl, fileSize],
-  );
+  const rangeSource = useMemo(() => {
+    if (!readToken && !shouldUseSplatRange(fileSize)) return null;
+    const readRange: typeof fetch | undefined = readToken ? async (_input, init) => {
+      const match = /^bytes=(\d+)-(\d+)$/.exec(new Headers(init?.headers).get("Range") ?? "");
+      if (!match) return new Response(null, { status: 416 });
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      const body = ownedBinaryChunk(await readGaussianPreviewChunk(readToken, start, end - start + 1));
+      return new Response(body.buffer, { status: 206, headers: { "Content-Range": `bytes ${start}-${start + body.byteLength - 1}/${fileSize}` } });
+    } : undefined;
+    return createSplatRangeSource(assetUrl, fileSize, readRange);
+  }, [assetUrl, fileSize, readToken]);
   const splatAssetOptions = useMemo(() => rangeSource ? {
     data: EDITABLE_SPLAT_ASSET_OPTIONS.data,
     file: {
@@ -1001,8 +1013,7 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
   const [loadedMaskKey, setLoadedMaskKey] = useState<string | null>(null);
   const [savingEdits, setSavingEdits] = useState(false);
   const [saveNotice, setSaveNotice] = useState<"saved" | "viewFailed" | null>(null);
-  const [gaussianExportError, setGaussianExportError] = useState<string | null>(null);
-  const [gaussianExporting, setGaussianExporting] = useState(false);
+  const [gaussianExportDialog, setGaussianExportDialog] = useState<PlyExportDialogState>({ phase: "closed" });
   const [gaussianExportProgress, setGaussianExportProgress] = useState(0);
   const [gaussianExportResult, setGaussianExportResult] = useState<string | null>(null);
   const [animationStatus, setAnimationStatus] = useState<AnimationStatus>({ phase: "reveal", elapsedSeconds: 0 });
@@ -1034,6 +1045,7 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
 
   const onStatus = useCallback((status: ViewportStatus) => setViewport(status), []);
   const onAnimationStatus = useCallback((status: AnimationStatus) => setAnimationStatus(status), []);
+  const gaussianExporting = gaussianExportDialog.phase === "preparing" || gaussianExportDialog.phase === "exporting";
   const operationBusy = savingEdits || navigationSaving || pendingNavigation !== null || htmlBusy || htmlConfirm || cropFreezing || gaussianExporting || !["idle", "completed", "error"].includes(videoPhase);
   const busy = operationBusy || gizmoDragging;
   const interactionBlocked = operationBusy || viewport.phase !== "ready" || cropFreezeError !== null;
@@ -1048,6 +1060,7 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
     const persistence = new PreviewEditPersistence(projectId);
     persistenceRef.current = persistence;
     setGaussianExportResult(null);
+    setGaussianExportDialog({ phase: "closed" });
     setPendingNavigation(null);
     setSaveNotice(null);
     return () => { persistence.destroy(); if (persistenceRef.current === persistence) persistenceRef.current = null; };
@@ -1159,7 +1172,7 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
     };
   }, [onDisposed, previewSessionId, store.descriptor?.projectId]);
 
-  const flushEdits = async (retry = false) => {
+  const flushEdits = async (retry = false, notify = true) => {
     sceneApiRef.current?.finishGizmo();
     const projectId = useGaussianTransformStore.getState().descriptor?.projectId;
     if (document.activeElement instanceof HTMLInputElement) document.activeElement.blur();
@@ -1170,7 +1183,7 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
     await persistenceRef.current.flush(retry);
     if (useGaussianTransformStore.getState().descriptor?.projectId !== projectId) throw new Error(t("viewer.editsUnsaved"));
     const viewSaved = sceneApiRef.current?.saveView() ?? false;
-    setSaveNotice(viewSaved ? "saved" : "viewFailed");
+    if (notify) setSaveNotice(viewSaved ? "saved" : "viewFailed");
   };
   const saveEdits = async (retry = false) => {
     if (busy || exportBusyRef.current || viewport.phase !== "ready") return;
@@ -1180,24 +1193,40 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
     catch (error) { useGaussianTransformStore.getState().setSaveState("error", error instanceof Error ? error.message : String(error)); }
     finally { exportBusyRef.current = false; setSavingEdits(false); }
   };
-  const exportGaussian = async () => {
-    if (!store.descriptor || busy || exportBusyRef.current) return;
+  const exportGaussian = async (retry = false) => {
+    if (!store.descriptor || busy || exportBusyRef.current || (retry && gaussianExportDialog.phase !== "error")) return;
     exportBusyRef.current = true;
-    setGaussianExporting(true);
+    setGaussianExportDialog({ phase: "preparing" });
     setGaussianExportProgress(0);
     setGaussianExportResult(null);
-    setGaussianExportError(null);
+    setSaveNotice(null);
     try {
-      await flushEdits();
+      await flushEdits(retry, false);
       const current = useGaussianTransformStore.getState();
+      setGaussianExportDialog({ phase: "exporting" });
       const result = await exportTransformedGaussian(store.descriptor.projectId, current.transform, current.editing.revision);
       setGaussianExportProgress(100);
       setGaussianExportResult(result.path);
+      setGaussianExportDialog({ phase: "completed", path: result.path });
     } catch (error) {
-      setGaussianExportError(error instanceof Error ? error.message : String(error));
+      setGaussianExportDialog({ phase: "error", error: error instanceof Error ? error.message : String(error) });
     } finally {
       exportBusyRef.current = false;
-      setGaussianExporting(false);
+    }
+  };
+  const closeGaussianExportDialog = () => {
+    if (!gaussianExporting) setGaussianExportDialog({ phase: "closed" });
+  };
+  const revealGaussianExport = async (path: string, keepDialogOpen = true) => {
+    try {
+      await revealFile(path);
+      if (keepDialogOpen) setGaussianExportDialog({ phase: "completed", path });
+    } catch (error) {
+      setGaussianExportDialog({
+        phase: "completed",
+        path,
+        revealError: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
@@ -1606,7 +1635,7 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
     <div className="preview-editor">
       <div ref={viewportElementRef} inert={operationBusy} className={`gaussian-viewport tool-${store.tool}`} onPointerDownCapture={rectanglePointerDown} onPointerMoveCapture={rectanglePointerMove} onPointerUpCapture={rectanglePointerEnd} onPointerCancelCapture={rectanglePointerEnd}>
         <Application key={`${store.descriptor.projectId}-${rendererRevision}`} className="gaussian-canvas" deviceTypes={previewDeviceTypes()} graphicsDeviceOptions={{ antialias: false, alpha: false, preserveDrawingBuffer: true, powerPreference: "high-performance" }}>
-          <SplatScene ref={sceneApiRef} projectId={store.descriptor.projectId} assetUrl={previewAssetUrl} fileSize={store.descriptor.fileSize} splatCount={store.descriptor.splatCount} transform={store.transform} mode={mode} tool={store.tool} crop={store.editing.crop} deletedMask={store.deletedMask} selectionMask={store.selectionMask} editorMasksReady={!store.descriptor.editMaskAssetUrl || loadedMaskKey === `${store.descriptor.projectId}:${store.descriptor.editMaskAssetUrl}`} gizmoMode={gizmoMode} interactionBlocked={interactionBlocked} onGizmoDragging={onGizmoDragging} onOrthographicViewChange={setOrthographicView} onStatus={onStatus} onAnimationStatus={onAnimationStatus} />
+          <SplatScene ref={sceneApiRef} projectId={store.descriptor.projectId} assetUrl={previewAssetUrl} fileSize={store.descriptor.fileSize} readToken={store.descriptor.readToken} splatCount={store.descriptor.splatCount} transform={store.transform} mode={mode} tool={store.tool} crop={store.editing.crop} deletedMask={store.deletedMask} selectionMask={store.selectionMask} editorMasksReady={!store.descriptor.editMaskAssetUrl || loadedMaskKey === `${store.descriptor.projectId}:${store.descriptor.editMaskAssetUrl}`} gizmoMode={gizmoMode} interactionBlocked={interactionBlocked} onGizmoDragging={onGizmoDragging} onOrthographicViewChange={setOrthographicView} onStatus={onStatus} onAnimationStatus={onAnimationStatus} />
         </Application>
         {mode === "preview" && <div ref={captureGuideRef} className={`portrait-capture-guide orientation-${orientation}`} style={guideSize} aria-hidden="true">
           <div className="portrait-frame-label"><span>{gaussianVideoDimensions(orientation).width} × {gaussianVideoDimensions(orientation).height}</span><span>30 FPS</span></div>
@@ -1644,19 +1673,24 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
       <span><b>{t("viewer.renderer")}</b>{viewport.renderer}</span>
       <span><b>{t("viewer.status")}</b>{phaseLabel}</span>
       {mode === "adjust" && <span className={`save-state ${store.saveState}`}><b>{t("viewer.project")}</b>{store.saveState === "saving" ? t("viewer.stateSaving") : store.saveState === "error" ? t("viewer.stateFailed") : store.saveState === "dirty" ? t("viewer.stateDirty") : t("viewer.stateSaved")}</span>}
-      {gaussianExportResult && <button className="statusbar-file-action" type="button" title={gaussianExportResult} onClick={() => void revealFile(gaussianExportResult).catch((error: unknown) => setGaussianExportError(String(error)))}><FolderOpen size={12} /><b>{t("viewer.exported")}</b>{gaussianExportResult.split(/[\\/]/).at(-1)}</button>}
+      {gaussianExportResult && <button className="statusbar-file-action" type="button" title={gaussianExportResult} onClick={() => void revealGaussianExport(gaussianExportResult, false)}><FolderOpen size={12} /><b>{t("viewer.exported")}</b>{gaussianExportResult.split(/[\\/]/).at(-1)}</button>}
       {mode === "preview" && <span><b>{t("viewer.videoEncoding")}</b>{videoCapability.checking ? t("viewer.checking") : videoCapability.supported ? t("viewer.h264Ready") : t("common.unavailable")}</span>}
       {videoResult && mode === "preview" && <button className="statusbar-file-action" type="button" title={videoResult.path} onClick={() => void revealFile(videoResult.path)}><FolderOpen size={12} /><b>{t("viewer.exported")}</b>{videoResult.path.split(/[\\/]/).at(-1)} · {formatBytes(videoResult.fileSize, locale)}</button>}
       {htmlResult && <button className="statusbar-file-action" type="button" title={htmlResult.path} onClick={() => void revealFile(htmlResult.path).catch((error: unknown) => setHtmlError(String(error)))}><FolderOpen size={12} /><b>{t("viewer.exported")}</b>{htmlResult.path.split(/[\\/]/).at(-1)} · {formatBytes(htmlResult.fileSize, locale)}</button>}
     </footer>
     {store.saveError && mode === "adjust" && <div className="preview-save-error"><span>{store.saveError}</span><button type="button" onClick={retrySave}>{t("viewer.retrySave")}</button></div>}
     {saveNotice && <div className={`preview-video-message ${saveNotice === "viewFailed" ? "warning" : ""}`} role="status">{t(saveNotice === "viewFailed" ? "viewer.viewSaveFailed" : "viewer.editsSaved")}</div>}
-    {gaussianExporting && <div className="preview-video-message" role="status"><LoaderCircle className="spin" size={14} />{t("export.plyProgress", { value: Math.floor(gaussianExportProgress) })}</div>}
-    {gaussianExportError && <div className="preview-video-message error">{t("export.plyFailed", { detail: gaussianExportError })}</div>}
     {mode === "preview" && !videoCapability.checking && !videoCapability.supported && <div className="preview-video-message warning">{videoCapability.reason}</div>}
     {mode === "preview" && videoError && <div className="preview-video-message error">{t("viewer.exportFailed", { detail: videoError })}</div>}
     {htmlError && <div className="preview-video-message error">{t("export.failed", {detail:htmlError})}</div>}
     {htmlBusy && <div className="html-export-progress" role="status"><LoaderCircle className="spin" size={18} /><span>{t(htmlProgress?.phase === "packing" ? "export.packing" : htmlProgress?.phase === "completed" ? "export.completed" : "export.preparing")}</span><progress max="100" value={htmlProgress?.progress ?? 0} /><span>{Math.floor(htmlProgress?.progress ?? 0)}%</span><button type="button" onClick={cancelHtml}>{t("common.cancel")}</button></div>}
+    <PlyExportDialog
+      state={gaussianExportDialog}
+      progress={gaussianExportProgress}
+      onClose={closeGaussianExportDialog}
+      onRetry={() => void exportGaussian(true)}
+      onReveal={(path) => void revealGaussianExport(path)}
+    />
     {htmlConfirm && <div className="gaussian-save-backdrop" role="dialog" aria-modal="true" aria-labelledby="html-export-title" aria-describedby="html-export-description" onKeyDown={event => { if(event.key === "Escape")setHtmlConfirm(false); }}>
       <div className="gaussian-save-dialog"><div className="gaussian-save-symbol"><FileCode2 size={19} /></div><div><h2 id="html-export-title">{t("export.html")}</h2><p id="html-export-description">{t("export.htmlWarning", {size:formatBytes(Math.ceil(store.descriptor.fileSize*4/3),locale)})}</p></div><div className="gaussian-save-actions"><button autoFocus type="button" className="secondary" onClick={() => setHtmlConfirm(false)}>{t("common.cancel")}</button><button type="button" className="primary" onClick={() => void exportHtml()}><Download size={14} />{t("export.label")}</button></div></div>
     </div>}

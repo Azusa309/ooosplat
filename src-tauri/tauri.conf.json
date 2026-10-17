@@ -51,6 +51,7 @@
       "../licenses/NVIDIA-CUDA-Runtime.txt": "licenses/NVIDIA-CUDA-Runtime.txt",
       "../licenses/Brush-LICENSE.txt": "licenses/Brush-LICENSE.txt",
       "../licenses/PlayCanvas-MIT.txt": "licenses/PlayCanvas-MIT.txt",
+      "../licenses/Niantic-SPZ-MIT.txt": "licenses/Niantic-SPZ-MIT.txt",
       "../licenses/Mediabunny-MPL-2.0.txt": "licenses/Mediabunny-MPL-2.0.txt",
       "../LICENSE": "LICENSE",
       "../NOTICE": "NOTICE",
