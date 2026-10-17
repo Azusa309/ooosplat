@@ -384,7 +384,9 @@ h1, h2 { margin: 0; font: 650 29px/1 "Bahnschrift", "Microsoft YaHei UI", sans-s
 .import-loading { min-height: 220px; display: grid; place-content: center; justify-items: center; gap: 12px; color: var(--muted); font-size: 12px; }
 .import-error { margin: 18px 20px 0; padding: 11px 12px; display: flex; gap: 8px; color: #8d302b; background: #fff2f0; border: 1px solid #e8c3bf; font-size: 11px; line-height: 1.6; }
 .import-name, .import-model-choice label { display: grid; gap: 7px; color: var(--muted); font-size: 10px; font-weight: 700; }
-.import-name input, .import-model-choice select { min-width: 0; height: 36px; padding: 0 10px; color: var(--ink); background: #fff; border: 1px solid var(--line-dark); font-size: 12px; }
+.import-name input, .import-model-choice select, .projection-select { min-width: 0; height: 36px; padding: 0 10px; color: var(--ink); background: #fff; border: 1px solid var(--line-dark); font-size: 12px; }
+.projection-select { width: 100%; }
+.panorama-preview { display: block; width: 100%; max-width: 640px; margin-top: 10px; border: 1px solid var(--line); }
 .import-model-choice { margin-top: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .import-summary-grid { margin-top: 18px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .import-summary-grid article { min-height: 114px; padding: 13px; display: grid; grid-template-columns: auto 1fr; align-content: start; gap: 6px 8px; background: #f0f2f5; border: 1px solid var(--line); }

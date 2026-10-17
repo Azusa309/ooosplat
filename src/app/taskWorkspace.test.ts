@@ -31,6 +31,14 @@ describe("task workspace persistence", () => {
     expect(restored.plannerDefaultPending).toBe(false);
     expect(restored).toMatchObject({ error: null, errorAt: null });
   });
+  it("persists the confirmed projection but not detection or preview data", () => {
+    const draft = { ...createGenerationDraft(1), videoProjection: "equirectangular" as const, inputPath: "capture.mp4", projectionDetection: { confirmedErp: false, requiresChoice: true, supportedErp: true, reason: "ERP", previewJpeg: [1,2,3] } };
+    saveTaskWorkspace([draft], { kind: "draft", id: draft.id }, 2);
+    const restored = loadTaskWorkspace().drafts[0];
+    expect(restored.videoProjection).toBe("equirectangular");
+    expect(restored.projectionDetection).toBeNull();
+    expect(restored.needsValidation).toBe(true);
+  });
 
   it("marks legacy drafts for one-time planner default hydration", () => {
     localStorage.setItem(TASK_WORKSPACE_STORAGE_KEY, JSON.stringify({

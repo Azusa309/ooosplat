@@ -4,8 +4,15 @@ export type DraftDisplayStatus = "standby" | "preparing" | "queued" | "running";
 
 export function draftIsRunnable(draft: TaskDraft): boolean {
   if (draft.running || draft.inputChecking || draft.error || !draft.inputPath) return false;
+  if (!draftProjectionReady(draft)) return false;
   if (draft.kind === "generation") return Boolean(draft.plan);
   return Boolean(draft.sourceProjectId && draft.reshootSource?.eligible && draft.reshootPlan?.compatible);
+}
+
+export function draftProjectionReady(draft: TaskDraft): boolean {
+  if (draft.inputType !== "video" || draft.kind !== "generation") return true;
+  if (draft.videoProjection === "equirectangular") return !!draft.projectionDetection?.supportedErp;
+  return draft.videoProjection !== "auto" || !draft.projectionDetection?.requiresChoice;
 }
 
 export function queuedDraftIds(

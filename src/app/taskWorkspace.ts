@@ -5,6 +5,8 @@ export const TASK_WORKSPACE_STORAGE_KEY = "ooo-splat-task-workspace-v1";
 export type TaskSelection = { kind: "draft" | "project" | "task"; id: string };
 
 export interface TaskDraft {
+  videoProjection: import("../types/pipeline").VideoProjection;
+  projectionDetection: import("../types/pipeline").ProjectionDetection | null;
   id: string;
   ordinal: number;
   kind: "generation" | "reshoot";
@@ -33,7 +35,7 @@ interface PersistedWorkspace {
   schemaVersion: 1;
   nextOrdinal: number;
   selected: TaskSelection;
-  drafts: Array<Pick<TaskDraft, "id" | "ordinal" | "kind" | "inputType" | "inputPath" | "quality" | "sourceProjectId" | "sourceProjectName" | "linkedProjectId" | "running"> & { plannerEnabled?: boolean }>;
+  drafts: Array<Pick<TaskDraft, "id" | "ordinal" | "kind" | "inputType" | "inputPath" | "quality" | "sourceProjectId" | "sourceProjectName" | "linkedProjectId" | "running"> & { plannerEnabled?: boolean; videoProjection?: import("../types/pipeline").VideoProjection }>;
 }
 
 const newId = () => {
@@ -49,6 +51,7 @@ const newId = () => {
 
 export function createGenerationDraft(ordinal: number, plannerEnabled = true, plannerDefaultPending = false): TaskDraft {
   return {
+    videoProjection: "auto", projectionDetection: null,
     id: newId(), ordinal, kind: "generation", inputType: "video", inputPath: null,
     quality: "balanced", plannerEnabled, plannerDefaultPending, sourceProjectId: null, sourceProjectName: null,
     linkedProjectId: null, running: false, inputChecking: false, needsValidation: false,
@@ -85,6 +88,7 @@ export function loadTaskWorkspace(): { drafts: TaskDraft[]; selected: TaskSelect
       return ({
       ...createGenerationDraft(Number(draft.ordinal) || 1),
       ...draft,
+      videoProjection: ["auto", "perspective", "equirectangular"].includes(draft.videoProjection ?? "") ? draft.videoProjection! : "auto",
       plannerEnabled: typeof draft.plannerEnabled === "boolean" ? draft.plannerEnabled : true,
       plannerDefaultPending: typeof draft.plannerEnabled !== "boolean",
       running,
@@ -118,7 +122,8 @@ export function saveTaskWorkspace(drafts: TaskDraft[], selected: TaskSelection, 
     schemaVersion: 1,
     nextOrdinal,
     selected,
-    drafts: drafts.map(({ id, ordinal, kind, inputType, inputPath, quality, plannerEnabled, plannerDefaultPending, sourceProjectId, sourceProjectName, linkedProjectId, running }) => ({
+    drafts: drafts.map(({ id, ordinal, kind, inputType, inputPath, quality, plannerEnabled, plannerDefaultPending, sourceProjectId, sourceProjectName, linkedProjectId, running, videoProjection }) => ({
+      videoProjection,
       id, ordinal, kind, inputType, inputPath, quality, sourceProjectId, sourceProjectName,
       linkedProjectId, running,
       ...(plannerDefaultPending ? {} : { plannerEnabled }),

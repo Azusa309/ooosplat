@@ -125,12 +125,18 @@ pub fn require_verified_cli(executable: &Path) -> Result<()> {
 
 async fn run_colmap(
     executable: &Path,
-    args: Vec<OsString>,
+    mut args: Vec<OsString>,
     working_directory: &Path,
     log_path: PathBuf,
     manager: &ProcessManager,
     observer: Option<ProcessObserver>,
 ) -> Result<()> {
+    let camera_config = working_directory.join("panorama-camera.json");
+    if args.first().is_some_and(|a| a == "feature_extractor") && camera_config.is_file() {
+        let config: crate::video::panorama::PanoramaCheckpoint =
+            serde_json::from_slice(&tokio::fs::read(camera_config).await?)?;
+        apply_panorama_camera(&mut args, &config);
+    }
     let output = manager
         .run(ProcessSpec {
             executable: executable.to_path_buf(),
@@ -779,6 +785,23 @@ async fn with_ba(
     automatic_optimization: bool,
     log: &Path,
 ) -> Result<(Vec<OsString>, super::colmap_ba::BaSelection)> {
+    // The marker is generated from the persisted pipeline checkpoint, never
+    // from a CLI version string. All mapper paths, including Bridge, share it.
+    if database
+        .parent()
+        .is_some_and(|p| p.join("panorama-camera.json").is_file())
+    {
+        super::colmap_ba::append_explicit_ceres_options(&mut args);
+        args.extend([
+            "--Mapper.init_min_tri_angle".into(),
+            "1".into(),
+            "--Mapper.init_max_forward_motion".into(),
+            "1".into(),
+        ]);
+        let selection = super::colmap_ba::BaSelection {gpu_index:None, detail:"Panorama: explicit local/global CERES; no Caspar; initial triangulation >= 1 degree".into()};
+        append_log(log, &format!("[OOOSplat] {}\n", selection.detail)).await?;
+        return Ok((args, selection));
+    }
     let selection = super::colmap_ba::select_for_mapper(
         executable,
         database,
@@ -790,6 +813,19 @@ async fn with_ba(
     append_log(log, &format!("[OOOSplat] {}\n", selection.detail)).await?;
     tracing::info!("{}", selection.detail);
     Ok((args, selection))
+}
+
+fn apply_panorama_camera(
+    args: &mut Vec<OsString>,
+    config: &crate::video::panorama::PanoramaCheckpoint,
+) {
+    if let Some(i) = args.iter().position(|a| a == "--ImageReader.camera_model") {
+        args[i + 1] = "EQUIRECTANGULAR".into();
+        args.extend([
+            "--ImageReader.camera_params".into(),
+            format!("{},{}", config.sfm_width, config.sfm_height).into(),
+        ]);
+    }
 }
 
 fn incremental_mapper_args(
@@ -825,6 +861,61 @@ fn incremental_mapper_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panorama_camera_uses_model_17_dimensions_without_a_fake_focal_length() {
+        let config = crate::video::panorama::PanoramaCheckpoint {
+            version: 1,
+            source_sha256: "test".into(),
+            sfm_width: 2048,
+            sfm_height: 1024,
+            face_size: 512,
+            field_of_view_degrees: 92.,
+        };
+        let mut args = feature_extraction_args(
+            Path::new("database.db"),
+            Path::new("frames"),
+            None,
+            Some(2),
+            "--FeatureExtraction.use_gpu",
+            "--FeatureExtraction.gpu_index",
+            Some(2048),
+            Some(8192),
+            None,
+        );
+        apply_panorama_camera(&mut args, &config);
+        let args = strings(args);
+        assert!(args
+            .windows(2)
+            .any(|p| p == ["--ImageReader.camera_model", "EQUIRECTANGULAR"]));
+        assert!(args
+            .windows(2)
+            .any(|p| p == ["--ImageReader.camera_params", "2048,1024"]));
+        assert!(args
+            .windows(2)
+            .any(|p| p == ["--FeatureExtraction.gpu_index", "2"]));
+    }
+    #[tokio::test]
+    async fn panorama_mapper_and_bridge_bypass_caspar_even_with_optimization_and_gpu_enabled() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("panorama-camera.json"), b"{}").unwrap();
+        let (args, selection) = with_ba(
+            Path::new("not-launched"),
+            &temp.path().join("database.db"),
+            vec!["mapper".into()],
+            Some(2),
+            true,
+            &temp.path().join("log"),
+        )
+        .await
+        .unwrap();
+        assert!(selection.gpu_index.is_none());
+        let args = strings(args);
+        for option in ["--Mapper.ba_local_backend", "--Mapper.ba_global_backend"] {
+            assert!(args.windows(2).any(|p| p == [option, "CERES"]));
+        }
+        assert!(!args.iter().any(|a| a == "CASPAR"));
+    }
 
     #[test]
     fn locked_runtime_identity_matches_the_shared_build_lock() {

@@ -140,6 +140,8 @@ The `.deb` installs only FFmpeg/FFprobe through Ubuntu's package manager; pinned
 
 ## Installation and Use
 
+The development branch adds [panorama video v1](docs/PANORAMA_VIDEO_V1.md#english-summary): standard, stitched, monoscopic, full 360°×180° ERP MP4. A 2:1 ratio alone requires an explicit ordinary-video/full-panorama choice after inspecting the preview. Dual-fisheye, stereo, VR180 and private camera originals are unsupported. SfM stays spherical; registered panoramas become six-face training caches afterward. Panorama reshoots are not supported in v1.
+
 Sample media: [Download from Quark Drive](https://pan.quark.cn/s/1dde892a1324) to test or try the generation workflow.
 
 1. On Windows, run `OOOSplat-0.6.1-x64-windows.exe`. On an Apple Silicon Mac, open `OOOSplat-0.6.1-arm64-macos.dmg` and drag OOOSplat into Applications. On Ubuntu 24.04, run `sudo apt install ./OOOSplat-0.6.1-x64-linux.deb`.

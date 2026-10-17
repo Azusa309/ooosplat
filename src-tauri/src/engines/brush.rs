@@ -153,6 +153,9 @@ fn train_args(
             densification.growth_stop_iter.to_string().into(),
         ]);
     }
+    if dataset.join("manifest.json").is_file() && dataset.join("signature.json").is_file() {
+        args.extend(["--max-scene-batch-cache-size".into(), "2GiB".into()]);
+    }
     args.extend([
         OsString::from("--export-every"),
         preset.total_steps.to_string().into(),

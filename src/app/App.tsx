@@ -372,6 +372,10 @@ export function App() {
   submittedIdsRef.current = new Set(Object.keys(sharedTasks));
   const submittedIdsKey = Object.keys(sharedTasks).sort().join('|');
   const selectedDraft = selectedTask.kind === "draft" ? drafts.find((draft) => draft.id === selectedTask.id) ?? null : null;
+  const panoramaPreview = useMemo(() => {
+    const bytes = selectedDraft?.projectionDetection?.previewJpeg;
+    return bytes?.length ? `data:image/jpeg;base64,${btoa(bytes.map((byte) => String.fromCharCode(byte)).join(""))}` : null;
+  }, [selectedDraft?.projectionDetection?.previewJpeg]);
   const selectedReshootSourceProject = selectedDraft?.kind === "reshoot" ? store.projects.find(project => project.id === selectedDraft.sourceProjectId) ?? null : null;
   const selectedProject = selectedTask.kind === "project"
     ? store.projects.find((project) => project.id === selectedTask.id)
@@ -1019,7 +1023,7 @@ export function App() {
       try {
         const result = await probeAndPlan(path, quality, plannerEnabled);
         if (inputAnalysisRevisions.current.get(draftId) !== revision) return false;
-        updateDraft(draftId, { inputType: result.inputType, video: result.video, imageSequence: result.imageSequence, plan: result.plan, estimate: result.estimate, error: null, inputChecking: false });
+        updateDraft(draftId, { inputType: result.inputType, video: result.video, projectionDetection: result.projectionDetection ?? null, imageSequence: result.imageSequence, plan: result.plan, estimate: result.estimate, error: null, inputChecking: false });
         return true;
       } catch (error) {
         if (inputAnalysisRevisions.current.get(draftId) !== revision) return false;
@@ -1072,6 +1076,7 @@ export function App() {
     if (!draft || draft.running) return false;
     queueRevisionRef.current += 1;
     updateDraft(draftId, {
+      ...(draft.inputPath !== path ? { videoProjection: "auto" as const, projectionDetection: null } : {}),
       inputPath: path, inputType, video: null, imageSequence: null, plan: null,
       estimate: null, reshootPlan: null, error: null,
     });
@@ -1192,6 +1197,7 @@ export function App() {
   const generate = async (draftId = selectedDraft?.id, source: "manual" | "queue" = "manual") => {
     const draft = taskWorkspaceRef.current.drafts.find((item) => item.id === draftId);
     if (!draft || draft.kind !== "generation" || !draft.inputPath || !draft.plan || !store.projectsRoot) return;
+    if ((draft.videoProjection === "auto" && draft.projectionDetection?.requiresChoice) || (draft.videoProjection === "equirectangular" && !draft.projectionDetection?.supportedErp)) return;
     if (!claimRunGate()) return;
     let largeSequenceAccepted = true;
     try {
@@ -1232,7 +1238,7 @@ export function App() {
     let promoted = false;
     let nextIndex = 0;
     try {
-      const result = await startPipeline(draft.inputPath, draft.quality, store.projectsRoot, draft.plannerEnabled, draft.id);
+      const result = await startPipeline(draft.inputPath, draft.quality, store.projectsRoot, draft.plannerEnabled, draft.id, draft.videoProjection);
       setLiveElapsedMs((current) => Math.max(current, result.durationMs));
       store.setResult(result);
       store.setPhase("completed");
@@ -1745,6 +1751,17 @@ export function App() {
           </div>
         </div>
 
+        {selectedDraft.inputType === "video" && selectedDraft.video && <div className="form-section">
+          <label className="field-label" htmlFor="video-projection">{t("panorama.projection")}</label>
+          <select className="projection-select" id="video-projection" aria-describedby="video-projection-hint" disabled={selectedDraft.running} value={selectedDraft.videoProjection} onChange={(event) => { queueRevisionRef.current += 1; updateDraft(selectedDraft.id, { videoProjection: event.target.value as typeof selectedDraft.videoProjection }); }}>
+            <option value="auto">{t("panorama.auto")}</option>
+            <option value="perspective">{t("panorama.ordinary")}</option>
+            <option value="equirectangular" disabled={!selectedDraft.projectionDetection?.supportedErp}>{t("panorama.full")}</option>
+          </select>
+          {selectedDraft.projectionDetection && <p className="field-note" id="video-projection-hint">{t(selectedDraft.projectionDetection.confirmedErp ? "panorama.confirmed" : selectedDraft.projectionDetection.requiresChoice ? selectedDraft.projectionDetection.supportedErp ? "panorama.ambiguous" : "panorama.unsupported" : "panorama.ordinaryHint")}</p>}
+          {panoramaPreview && <img className="panorama-preview" alt={t("panorama.previewAlt")} src={panoramaPreview} />}
+        </div>}
+
         <div className="form-section">
           <label className="field-label">{t("project.root")}</label>
           <button className="path-picker compact" type="button" disabled={selectedDraft.running} onClick={() => void chooseRoot()}>
@@ -1791,7 +1808,7 @@ export function App() {
 
         {selectedDraft.imageSequence?.requiresLargeSequenceConfirmation && <div className="sequence-warning" role="status"><CircleAlert size={16} /><span><strong>{t("sequence.title")}</strong><small>{t("sequence.hint")}</small></span></div>}
 
-        <button className="primary-action" type="button" disabled={runBusy || selectedDraft.inputChecking || !selectedDraft.inputPath || !selectedDraft.plan || !store.projectsRoot || missingEngines.length > 0} onClick={() => void generate()}><Play size={16} fill="currentColor" />{t("generate.start")}</button>
+        <button className="primary-action" type="button" disabled={runBusy || selectedDraft.inputChecking || !selectedDraft.inputPath || !selectedDraft.plan || !store.projectsRoot || missingEngines.length > 0 || (selectedDraft.videoProjection === "auto" && !!selectedDraft.projectionDetection?.requiresChoice) || (selectedDraft.videoProjection === "equirectangular" && !selectedDraft.projectionDetection?.supportedErp)} onClick={() => void generate()}><Play size={16} fill="currentColor" />{t("generate.start")}</button>
         {detailErrorBanner}
         </>}
 

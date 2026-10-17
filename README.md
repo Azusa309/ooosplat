@@ -140,6 +140,8 @@ sudo apt install ./OOOSplat-0.6.1-x64-linux.deb
 
 ## 安装与使用
 
+开发分支新增[全景视频首版](docs/PANORAMA_VIDEO_V1.md)：支持标准、已拼接、单目完整 360°×180° ERP MP4。仅有 2:1 尺寸时，请查看预览并选择普通视频或完整全景；不支持双鱼眼、双目、VR180 和厂商私有原片。全景重建后生成六面训练缓存，保留球面重建，首版暂不开放全景补拍。
+
 测试素材：[夸克网盘下载](https://pan.quark.cn/s/1dde892a1324)，可用于测试或体验生成流程。
 
 1. Windows 运行 `OOOSplat-0.6.1-x64-windows.exe`；Apple Silicon Mac 打开 `OOOSplat-0.6.1-arm64-macos.dmg` 并将 OOOSplat 拖入“应用程序”；Ubuntu 24.04 使用 `sudo apt install ./OOOSplat-0.6.1-x64-linux.deb`。

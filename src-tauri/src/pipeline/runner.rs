@@ -354,6 +354,7 @@ pub enum RunnerUpdate {
 }
 
 pub struct PipelineRunner {
+    video_projection: crate::video::panorama::VideoProjection,
     lifecycle: Option<Arc<dyn Fn(RunnerUpdate) + Send + Sync>>,
     input_boundary: Option<PathBuf>,
     engines: EnginePaths,
@@ -387,6 +388,7 @@ impl PipelineRunner {
         emit: impl Fn(PipelineEvent) + Send + Sync + 'static,
     ) -> Self {
         Self {
+            video_projection: crate::video::panorama::VideoProjection::Auto,
             engines,
             lifecycle: None,
             input_boundary: None,
@@ -410,6 +412,14 @@ impl PipelineRunner {
 
     pub fn with_input_boundary(mut self, path: Option<PathBuf>) -> Self {
         self.input_boundary = path;
+        self
+    }
+
+    pub fn with_video_projection(
+        mut self,
+        projection: crate::video::panorama::VideoProjection,
+    ) -> Self {
+        self.video_projection = projection;
         self
     }
 
@@ -697,6 +707,7 @@ impl PipelineRunner {
         planner_enabled: bool,
         probed_video: Option<VideoInfo>,
         target_dimensions: Option<(u32, u32)>,
+        panorama: bool,
     ) -> Result<PreparedFrames> {
         self.events
             .stage(PipelineStage::ProbingVideo, 0.0, "正在读取视频信息");
@@ -728,11 +739,45 @@ impl PipelineRunner {
 
         self.events
             .stage(PipelineStage::PlanningFrames, 0.0, "正在规划均匀抽帧");
-        let plan = if planner_enabled {
+        let mut plan = if planner_enabled {
             QualityV2FrameSelection.create_plan(&video, &quality.preset())
         } else {
             UniformRatioFrameSelection.create_plan(&video, &quality.preset())
         };
+        // A 2:1 target is set only by the persisted panorama branch. Keep real
+        // decoder PTS and indices, including a separate rescue candidate pool.
+        if panorama {
+            let (width, height) = target_dimensions
+                .ok_or_else(|| SplatError::Process("全景抽帧缺少目标尺寸".into()))?;
+            let count = plan
+                .estimated_frames
+                .max(plan.candidate_frames.len() as u64);
+            if count
+                .saturating_mul(width as u64)
+                .saturating_mul(height as u64)
+                .saturating_mul(8)
+                > crate::video::panorama::MAX_CACHE_BYTES
+            {
+                return Err(SplatError::Process(
+                    "全景抽帧超过首版 20 GiB 临时预算，请缩短视频或降低档位".into(),
+                ));
+            }
+            let times = crate::video::panorama::actual_frame_plan(
+                &self.engines.ffprobe,
+                input,
+                &mut plan,
+                &self.process_manager,
+            )
+            .await?;
+            tokio::fs::write(
+                output
+                    .parent()
+                    .unwrap_or(output)
+                    .join("panorama-frame-times.json"),
+                serde_json::to_vec_pretty(&times)?,
+            )
+            .await?;
+        }
         self.events.stage(
             PipelineStage::PlanningFrames,
             1.0,
@@ -760,7 +805,7 @@ impl PipelineRunner {
             Some(plan.estimated_frames),
             ObserverMode::Ffmpeg,
         );
-        let extraction = if planner_enabled {
+        let extraction = if planner_enabled || panorama {
             extract_selected_frames(
                 &self.engines.ffmpeg,
                 input,
@@ -1030,6 +1075,7 @@ impl PipelineRunner {
             .write_metadata(&paths.metadata, &metadata)
             .await?;
         let mut state = project_manager.read_state(&paths.state).await?;
+        state.video_projection = self.video_projection;
         state.configuration = Some((*crate::presets::pipeline_optimization_config()).clone());
         state.planner_enabled = self.planner_enabled;
         state.resolution_policy_version = self
@@ -1103,6 +1149,11 @@ impl PipelineRunner {
         let source_state: PipelineStateFile =
             serde_json::from_slice(&tokio::fs::read(project.join("state.json")).await?)?;
         info.planner_enabled = source_state.planner_enabled;
+        if source_state.panorama.is_some() {
+            info.reason =
+                Some("全景项目首版暂不支持高清补拍；原球面重建和六面训练缓存保持独立".into());
+            return Ok(info);
+        }
         if source_state
             .frames
             .as_ref()
@@ -1825,6 +1876,7 @@ impl PipelineRunner {
                             state.planner_enabled,
                             Some(supplemental_video),
                             Some((target_width, target_height)),
+                            false,
                         )
                         .await?;
                     move_extracted_reshoot(
@@ -2176,6 +2228,70 @@ impl PipelineRunner {
         acceleration: &crate::engines::ColmapAccelerationStatus,
     ) -> Result<PipelineResult> {
         let quality = metadata.quality;
+        let mut panorama_video = None;
+        if metadata.input_type == ProjectInputType::Video
+            && state.video_projection != crate::video::panorama::VideoProjection::Perspective
+        {
+            let video = probe_video(
+                &self.engines.ffprobe,
+                &metadata.source_path,
+                Some(paths.logs.join("ffprobe.log")),
+                &self.process_manager,
+            )
+            .await?;
+            let detection = crate::video::panorama::detect(
+                &self.engines.ffprobe,
+                &self.engines.ffmpeg,
+                &metadata.source_path,
+                &video,
+                &self.process_manager,
+                false,
+            )
+            .await?;
+            if crate::video::panorama::resolve(state.video_projection, &detection)? {
+                let input = metadata.source_path.clone();
+                let info = video.clone();
+                let cancellation = self.process_manager.child_token();
+                let config = crate::presets::spawn_pipeline_blocking(move || {
+                    crate::video::panorama::PanoramaCheckpoint::new_cancellable(
+                        &input,
+                        quality,
+                        &info,
+                        &cancellation,
+                    )
+                })
+                .await
+                .map_err(|e| SplatError::Process(e.to_string()))??;
+                if state
+                    .panorama
+                    .as_ref()
+                    .is_some_and(|previous| previous != &config)
+                {
+                    let sfm_changed = state.panorama.as_ref().is_some_and(|previous| {
+                        previous.source_sha256 != config.source_sha256
+                            || previous.sfm_width != config.sfm_width
+                            || previous.sfm_height != config.sfm_height
+                    });
+                    if sfm_changed {
+                        state.frames = None;
+                        state.features_complete = false;
+                        state.matching_complete = false;
+                        state.reconstruction_complete = false;
+                        state.bridge_backfill = Default::default();
+                    }
+                    state.brush_complete = false;
+                    state.brush_training = Default::default();
+                }
+                state.panorama = Some(config);
+                state.video = Some(video.clone());
+                panorama_video = Some(video);
+                project_manager.write_state(&paths.state, &state).await?;
+            } else if state.panorama.is_some() {
+                return Err(SplatError::Process(
+                    "源视频投影已发生变化，不能复用球面重建；请将修改后的素材创建为新任务".into(),
+                ));
+            }
+        }
         if state.input_type != metadata.input_type {
             return Err(SplatError::Process(
                 "项目输入类型与检查点不一致，无法安全继续".into(),
@@ -2188,7 +2304,8 @@ impl PipelineRunner {
         let uses_current_resolution_policy = state.planner_enabled
             && state.resolution_policy_version == Some(PLANNER_RESOLUTION_POLICY_VERSION);
         let mut preprobed_video = None;
-        if uses_current_resolution_policy
+        if state.panorama.is_none()
+            && uses_current_resolution_policy
             && state.resolution_plan.is_none()
             && metadata.input_type == ProjectInputType::Video
         {
@@ -2213,8 +2330,14 @@ impl PipelineRunner {
             preprobed_video = Some(video);
         }
         let target_dimensions = state
-            .resolution_plan
-            .map(|plan| (plan.working_width, plan.working_height));
+            .panorama
+            .as_ref()
+            .map(|p| (p.sfm_width, p.sfm_height))
+            .or_else(|| {
+                state
+                    .resolution_plan
+                    .map(|plan| (plan.working_width, plan.working_height))
+            });
         let mut prepared =
             if let Some(prepared) = prepared_frames_from_checkpoint(paths, &state).await? {
                 self.events.stage(
@@ -2239,8 +2362,11 @@ impl PipelineRunner {
                             &paths.masks,
                             Some(&paths.logs),
                             state.planner_enabled,
-                            preprobed_video.or_else(|| state.video.clone()),
+                            panorama_video
+                                .or(preprobed_video)
+                                .or_else(|| state.video.clone()),
                             target_dimensions,
+                            state.panorama.is_some(),
                         )
                         .await?
                     }
@@ -2259,7 +2385,10 @@ impl PipelineRunner {
                 state.input_type = prepared.input_type;
                 state.video = prepared.video.clone();
                 state.image_sequence = prepared.image_sequence.clone();
-                if uses_current_resolution_policy && state.resolution_plan.is_none() {
+                if state.panorama.is_none()
+                    && uses_current_resolution_policy
+                    && state.resolution_plan.is_none()
+                {
                     state.resolution_plan = Some(resolve_planner_resolution_plan(
                         quality,
                         acceleration.usable_gpu_total_memory_mb(),
@@ -2291,14 +2420,29 @@ impl PipelineRunner {
         let sparse = paths.colmap.join("sparse");
         let colmap_log = paths.logs.join("colmap.log");
         let preset = quality.preset();
-        let sfm_max_image_size = state
-            .resolution_plan
-            .map(|plan| plan.sfm_max_image_size)
-            .unwrap_or(if state.planner_enabled {
-                preset.planned_sfm_max_image_size
-            } else {
-                preset.sfm_max_image_size
-            });
+        let sfm_max_image_size =
+            state
+                .panorama
+                .as_ref()
+                .map(|p| p.sfm_width)
+                .unwrap_or_else(|| {
+                    state
+                        .resolution_plan
+                        .map(|plan| plan.sfm_max_image_size)
+                        .unwrap_or(if state.planner_enabled {
+                            preset.planned_sfm_max_image_size
+                        } else {
+                            preset.sfm_max_image_size
+                        })
+                });
+        if let Some(config) = &state.panorama {
+            tokio::fs::create_dir_all(&paths.colmap).await?;
+            tokio::fs::write(
+                paths.colmap.join("panorama-camera.json"),
+                serde_json::to_vec(config)?,
+            )
+            .await?;
+        }
         if let Some(resolution) = state.resolution_plan {
             self.events.send(
                 PipelineStage::ExtractingFeatures,
@@ -2350,6 +2494,13 @@ impl PipelineRunner {
             );
         } else {
             reset_directory(&paths.colmap).await?;
+            if let Some(config) = &state.panorama {
+                tokio::fs::write(
+                    paths.colmap.join("panorama-camera.json"),
+                    serde_json::to_vec(config)?,
+                )
+                .await?;
+            }
             self.events.stage(
                 PipelineStage::ExtractingFeatures,
                 0.0,
@@ -2615,7 +2766,48 @@ impl PipelineRunner {
                 .ok_or_else(|| SplatError::Process("Brush 检查点文件缺失，无法继续发布".into()))?
         } else {
             reset_directory(&paths.brush).await?;
-            let dataset = prepare_brush_dataset(&paths.brush, &paths.frames, &model).await?;
+            let dataset = if let Some(config) = &state.panorama {
+                self.events.stage(
+                    PipelineStage::TrainingSplats,
+                    0.0,
+                    "正在将已注册全景帧转换为六面针孔训练缓存（不重新匹配或重建）",
+                );
+                let config = config.clone();
+                let frames = paths.frames.clone();
+                let masks = paths.masks.clone();
+                let model = model.clone();
+                let root = paths.work.join("panorama-training");
+                let cancel = self.process_manager.child_token();
+                let events = self.events.clone();
+                crate::presets::spawn_pipeline_blocking(move || {
+                    crate::video::panorama::prepare_training_cache(
+                        &frames,
+                        &masks,
+                        &model,
+                        &root,
+                        &config,
+                        &cancel,
+                        |current, total| {
+                            events.send(
+                                PipelineStage::TrainingSplats,
+                                Some(PipelineEngine::System),
+                                EventKind::Stage,
+                                EventLevel::Info,
+                                Some(0.0),
+                                false,
+                                format!("六面训练缓存 {current}/{total} 个全景时刻"),
+                                Some(current),
+                                Some(total),
+                                Some("panoramas"),
+                            )
+                        },
+                    )
+                })
+                .await
+                .map_err(|e| SplatError::Process(e.to_string()))??
+            } else {
+                prepare_brush_dataset(&paths.brush, &paths.frames, &model).await?
+            };
             let source_long_edge = prepared
                 .video
                 .as_ref()
@@ -2628,7 +2820,7 @@ impl PipelineRunner {
                 })
                 .unwrap_or(1);
             let detected_total_memory_mb = acceleration.usable_gpu_total_memory_mb();
-            let resolved_brush = state.brush_training.resolved.unwrap_or_else(|| {
+            let mut resolved_brush = state.brush_training.resolved.unwrap_or_else(|| {
                 state.resolution_plan.map_or_else(
                     || {
                         resolve_brush_training_preset(
@@ -2650,6 +2842,10 @@ impl PipelineRunner {
                     },
                 )
             });
+            if let Some(config) = &state.panorama {
+                resolved_brush.preset.max_resolution =
+                    resolved_brush.preset.max_resolution.min(config.face_size);
+            }
             if !state.brush_training.oom_retry_used {
                 state
                     .brush_training
@@ -4695,6 +4891,148 @@ pub fn default_engine_paths(engine_root: Option<PathBuf>) -> EnginePaths {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Real engines, no telemetry/catalog writes. The fixture must be a completed
+    /// diagnostic project; only isolated copies/derived outputs are modified.
+    #[tokio::test]
+    #[ignore = "Requires OOOSPLAT_PANORAMA_TEST_PROJECT and the bundled GPU runtime"]
+    async fn bundled_panorama_cancel_and_resume() {
+        let source = PathBuf::from(
+            std::env::var_os("OOOSPLAT_PANORAMA_TEST_PROJECT")
+                .expect("Set a completed diagnostic project path"),
+        );
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let temporary = tempfile::tempdir_in(workspace.join(".cache/panorama-v1")).unwrap();
+        let project = temporary.path().join("resume-project");
+        fn copy_readonly_tree(src: &Path, dst: &Path) {
+            std::fs::create_dir_all(dst).unwrap();
+            for e in std::fs::read_dir(src).unwrap() {
+                let e = e.unwrap();
+                let name = e.file_name();
+                if ["panorama-training", "brush", "final.ply", "edit.ply"]
+                    .iter()
+                    .any(|n| name == std::ffi::OsStr::new(n))
+                {
+                    continue;
+                }
+                let dest = dst.join(&name);
+                if e.file_type().unwrap().is_dir() {
+                    copy_readonly_tree(&e.path(), &dest);
+                } else {
+                    std::fs::copy(e.path(), dest).unwrap();
+                }
+            }
+        }
+        copy_readonly_tree(&source, &project);
+        let paths = ProjectPaths::existing(uuid::Uuid::new_v4(), project.clone());
+        let manager = ProjectManager::for_diagnostics(temporary.path().into());
+        let mut metadata: ProjectMetadata =
+            serde_json::from_slice(&std::fs::read(&paths.metadata).unwrap()).unwrap();
+        metadata.id = paths.id;
+        metadata.status = ProjectStatus::Cancelled;
+        metadata.output = None;
+        let mut state = manager.read_state(&paths.state).await.unwrap();
+        state.brush_complete = false;
+        state.brush_training = Default::default();
+        state.stage = PipelineStage::ValidatingReconstruction;
+        manager.write_state(&paths.state, &state).await.unwrap();
+        manager
+            .write_metadata(&paths.metadata, &metadata)
+            .await
+            .unwrap();
+        let sphere = paths.colmap.join("sparse/0/images.bin");
+        let before = crate::video::panorama::fingerprint(&sphere).unwrap();
+        let before_time = std::fs::metadata(&sphere).unwrap().modified().unwrap();
+        let cancel_handle = Arc::new(std::sync::Mutex::new(None::<ProcessManager>));
+        let observer = cancel_handle.clone();
+        let runner = PipelineRunner::new(
+            default_engine_paths(Some(workspace.join("engines"))),
+            move |event| {
+                if event.message.starts_with("六面训练缓存 2/") {
+                    observer.lock().unwrap().as_ref().unwrap().cancel();
+                }
+            },
+        );
+        *cancel_handle.lock().unwrap() = Some(runner.process_manager.clone());
+        let acceleration = runner.verify_pipeline_engines().await.unwrap();
+        let cancelled = runner
+            .execute_project(
+                manager.clone(),
+                paths.clone(),
+                &mut metadata,
+                state,
+                &acceleration,
+            )
+            .await;
+        assert!(matches!(cancelled, Err(SplatError::Cancelled)));
+        assert_eq!(metadata.status, ProjectStatus::Cancelled);
+        let cache = paths.work.join("panorama-training/images");
+        let count = std::fs::read_dir(&cache).unwrap().count();
+        assert_eq!(count, 2);
+        assert!(!std::fs::read_dir(&cache).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".partial")));
+        let first = std::fs::read_dir(&cache)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path()
+            .join("front.png");
+        let face_time = std::fs::metadata(&first).unwrap().modified().unwrap();
+        let restored = manager.read_state(&paths.state).await.unwrap();
+        assert!(restored.reconstruction_complete);
+        assert!(!restored.brush_complete);
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = messages.clone();
+        let runner = PipelineRunner::new(
+            default_engine_paths(Some(workspace.join("engines"))),
+            move |event| {
+                if event.message.contains("复用") {
+                    seen.lock().unwrap().push(event.message);
+                }
+            },
+        );
+        let result = runner
+            .execute_project(
+                manager,
+                paths.clone(),
+                &mut metadata,
+                restored,
+                &acceleration,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.registered_images, result.input_images);
+        assert!(result.splat_count > 0);
+        assert_eq!(
+            crate::video::panorama::fingerprint(&sphere).unwrap(),
+            before
+        );
+        assert_eq!(
+            std::fs::metadata(&sphere).unwrap().modified().unwrap(),
+            before_time
+        );
+        assert_eq!(
+            std::fs::metadata(first).unwrap().modified().unwrap(),
+            face_time
+        );
+        let seen = messages.lock().unwrap();
+        for text in [
+            "帧检查点",
+            "特征提取检查点",
+            "顺序匹配检查点",
+            "相机重建检查点",
+        ] {
+            assert!(seen.iter().any(|m| m.contains(text)), "{text}: {seen:?}");
+        }
+        eprintln!("Real cancellation/resume verified: {} ERP frames, {} splats; sphere model and completed face batches unchanged",result.input_images,result.splat_count);
+    }
 
     #[test]
     fn reshoot_project_name_uses_the_short_suffix() {

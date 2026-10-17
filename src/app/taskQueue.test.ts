@@ -34,6 +34,13 @@ describe("task queue ordering", () => {
 });
 
 describe("task queue status", () => {
+  it("stops at an ambiguous panorama until the user chooses a projection", () => {
+    const draft = { ...readyGeneration(1), projectionDetection: { requiresChoice: true, supportedErp: true, confirmedErp: false, reason: "2:1", previewJpeg: [] } };
+    expect(draftIsRunnable(draft)).toBe(false);
+    expect(draftIsRunnable({ ...draft, videoProjection: "perspective" })).toBe(true);
+    expect(draftIsRunnable({ ...draft, videoProjection: "equirectangular" })).toBe(true);
+    expect(draftIsRunnable({ ...draft, videoProjection: "equirectangular", projectionDetection: { ...draft.projectionDetection, supportedErp: false } })).toBe(false);
+  });
   it("queues a contiguous ready generation/reshoot prefix and stops at the first barrier", () => {
     const active = { ...readyGeneration(1), running: true };
     const blocked = { ...readyGeneration(3), inputPath: null, plan: null };

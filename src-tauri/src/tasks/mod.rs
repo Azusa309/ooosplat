@@ -824,6 +824,13 @@ impl TaskService {
                 service.on_event(id, run_id, event);
             })
             .with_effectiveness_tracker(effectiveness)
+            .with_video_projection(
+                task.request_parameters
+                    .as_ref()
+                    .and_then(|v| v.get("videoProjection"))
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default(),
+            )
             .with_workspace_task_id(Some(id))
             .with_input_boundary(
                 (task.source.as_deref() == Some("mcp")).then(|| task.input_path.clone()),

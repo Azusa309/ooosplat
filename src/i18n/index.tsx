@@ -4,6 +4,15 @@ export type Locale = "zh-CN" | "en";
 export type TranslationParams = Record<string, string | number>;
 
 const zhCN = {
+  "panorama.projection": "视频投影",
+  "panorama.auto": "自动识别",
+  "panorama.ordinary": "普通视频",
+  "panorama.full": "完整全景（已拼接 · 单目 · 360°×180° ERP）",
+  "panorama.confirmed": "检测到 ERP 元数据。请确认预览为完整拼接单目全景。",
+  "panorama.ambiguous": "2:1 仅是线索。请查看预览后选择普通视频或完整全景；不支持双鱼眼、双目、VR180 和厂商私有原片。",
+  "panorama.unsupported": "不支持此素材的立体、裁切或旋转投影。请先导出标准单目 ERP MP4，或选择普通视频。",
+  "panorama.ordinaryHint": "完整全景仅支持标准 2:1 ERP MP4；普通视频流程不变。",
+  "panorama.previewAlt": "原始视频首帧：请确认是否为完整单目 ERP",
   "viewer.saveEdits": "保存编辑",
   "viewer.editsSaved": "编辑与视角已保存",
   "viewer.viewSaveFailed": "编辑已保存，但视角未能保存。请检查本机存储空间后重试。",
@@ -679,6 +688,15 @@ const zhCN = {
 export type TranslationKey = keyof typeof zhCN;
 
 const en: Record<TranslationKey, string> = {
+  "panorama.projection": "Video projection",
+  "panorama.auto": "Automatic",
+  "panorama.ordinary": "Ordinary video",
+  "panorama.full": "Full panorama (stitched · mono · 360°×180° ERP)",
+  "panorama.confirmed": "ERP metadata detected. Verify the preview is stitched, full and monoscopic.",
+  "panorama.ambiguous": "2:1 is only a clue. Inspect the preview and choose ordinary video or full ERP. Dual-fisheye, stereo, VR180 and private camera originals are unsupported.",
+  "panorama.unsupported": "Unsupported stereo, cropped or rotated projection. Export standard mono ERP MP4 first, or choose ordinary video.",
+  "panorama.ordinaryHint": "Full panorama requires standard 2:1 ERP MP4. Ordinary video is unchanged.",
+  "panorama.previewAlt": "Source video frame: verify full monoscopic ERP",
   "panel.gizmo": "Scene gizmo",
   "panel.gizmoToggleOff": "Click again to turn off the gizmo",
   "panel.gizmoToggleOn": "Click to enable the gizmo",
@@ -1021,6 +1039,10 @@ const exactPipelineEnglish: Record<string, string> = {
   "Bridge Backfill 正在复用初始模型继续增量重建": "Bridge Backfill is continuing incremental reconstruction from the initial model",
   "已复用 Brush 训练检查点": "Reused Brush training checkpoint",
   "Brush 训练完成": "Brush training completed",
+  "正在将已注册全景帧转换为六面针孔训练缓存（不重新匹配或重建）": "Converting registered panoramas to six-face pinhole training caches (no new matching or SfM)",
+  "全景项目首版暂不支持高清补拍；原球面重建和六面训练缓存保持独立": "Panorama reshoots are unavailable in v1; spherical reconstruction and six-face training caches remain separate",
+  "无法仅凭 2:1 尺寸确认全景，请查看素材预览并选择普通视频或完整全景": "2:1 dimensions cannot confirm ERP. Inspect the source preview and choose ordinary video or full panorama",
+  "全景抽帧超过首版 20 GiB 临时预算，请缩短视频或降低档位": "Panorama extraction exceeds the v1 20 GiB temporary budget; shorten the video or use a lower quality",
   "正在校验并发布 final.ply": "Validating and publishing final.ply",
   "全部处理完成": "All processing completed",
   "任务已取消": "Task cancelled",
@@ -1073,6 +1095,7 @@ export function localizePipelineMessage(locale: Locale, message: string): string
   const exact = exactPipelineEnglish[message];
   if (exact) return exact;
   const patterns: Array<[RegExp, (...values: string[]) => string]> = [
+    [/^六面训练缓存 (\d+)\/(\d+) 个全景时刻$/, (current,total) => `Six-face training cache: ${current}/${total} panorama times`],
     [/^SOG 引用了导入目录外的文件：(.+)$/, (name) => `The SOG references a file outside the import folder: ${name}`],
     [/^SOG 不允许通过符号链接读取关联文件：(.+)$/, (name) => `The SOG cannot read a referenced file through a symbolic link: ${name}`],
     [/^SOG 缺少关联文件：(.+)$/, (name) => `The SOG is missing a referenced file: ${name}`],

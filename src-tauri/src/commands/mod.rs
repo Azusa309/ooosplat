@@ -474,6 +474,7 @@ pub struct GaussianVideoExportResult {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProbeAndPlan {
+    projection_detection: Option<crate::video::panorama::ProjectionDetection>,
     input_type: ProjectInputType,
     video: Option<VideoInfo>,
     image_sequence: Option<ImageSequenceInfo>,
@@ -558,6 +559,7 @@ pub async fn probe_and_plan(
         );
         Ok(ProbeAndPlan {
             input_type: ProjectInputType::Images,
+            projection_detection: None,
             video: None,
             image_sequence: Some(image_sequence),
             plan,
@@ -566,6 +568,15 @@ pub async fn probe_and_plan(
     } else {
         let video =
             probe_video(&engine_paths.ffprobe, &input, None, &ProcessManager::new()).await?;
+        let projection_detection = crate::video::panorama::detect(
+            &engine_paths.ffprobe,
+            &engine_paths.ffmpeg,
+            &input,
+            &video,
+            &ProcessManager::new(),
+            true,
+        )
+        .await?;
         let plan = if planner_enabled {
             QualityV2FrameSelection.create_plan(&video, &quality.preset())
         } else {
@@ -619,6 +630,7 @@ pub async fn probe_and_plan(
         );
         Ok(ProbeAndPlan {
             input_type: ProjectInputType::Video,
+            projection_detection: Some(projection_detection),
             video: Some(video),
             image_sequence: None,
             plan,
@@ -1095,6 +1107,7 @@ pub async fn create_gui_task(
     projects_root: String,
     planner_enabled: Option<bool>,
     workspace_task_id: Option<String>,
+    video_projection: Option<crate::video::panorama::VideoProjection>,
 ) -> std::result::Result<crate::tasks::TaskRecord, crate::tasks::ServiceError> {
     let id = workspace_task_id
         .map(|v| Uuid::parse_str(&v))
@@ -1109,7 +1122,7 @@ pub async fn create_gui_task(
             planner_enabled.unwrap_or(true),
             "gui",
             None,
-            None,
+            video_projection.map(|projection| serde_json::json!({"videoProjection":projection})),
         )
         .await
 }

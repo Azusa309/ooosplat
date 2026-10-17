@@ -60,12 +60,15 @@ export interface RuntimeEstimate {
   basis: string;
 }
 export interface ProbeAndPlan {
+  projectionDetection?: ProjectionDetection | null;
   inputType: InputType;
   video: VideoInfo | null;
   imageSequence: ImageSequenceInfo | null;
   plan: FramePlan;
   estimate: RuntimeEstimate;
 }
+export type VideoProjection = "auto" | "perspective" | "equirectangular";
+export interface ProjectionDetection { confirmedErp: boolean; requiresChoice: boolean; supportedErp: boolean; reason: string; previewJpeg: number[]; }
 
 export interface ReshootSourceInfo {
   projectId: string;

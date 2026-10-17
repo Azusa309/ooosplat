@@ -1,6 +1,7 @@
 pub mod extract;
 pub mod frame_plan;
 pub mod image_sequence;
+pub mod panorama;
 pub mod probe;
 
 pub use frame_plan::{

@@ -262,6 +262,20 @@ describe("App preview workspace", () => {
     expect(tooltip?.textContent).toContain("AI 生成图片容易出现");
   });
 
+  it("requires confirmation for ambiguous ERP and passes the chosen projection to the task", async () => {
+    mocks.selectVideo.mockResolvedValueOnce("E:\\Media\\panorama.mp4");
+    mocks.probeAndPlan.mockResolvedValueOnce({ inputType: "video", video: { duration: 10, width: 3840, height: 1920, fps: 30, totalFrames: 300, codec: "h264", rotation: 0, hasAlpha: false, pixelFormat: "yuv420p" }, imageSequence: null, plan: { estimatedFrames: 60, samplingFps: 6, retentionRatio: 0.2 }, estimate: { estimatedMs: 1, lowerBoundMs: 1, upperBoundMs: 2, confidence: "low", sampleCount: 0, basis: "ERP" }, projectionDetection: { confirmedErp: false, requiresChoice: true, supportedErp: true, reason: "2:1", previewJpeg: [255,216,255,217] } });
+    await act(async () => container.querySelector<HTMLButtonElement>(".input-picker > .path-picker")!.click());await flush();
+    expect(container.querySelector<HTMLButtonElement>(".primary-action")!.disabled).toBe(true);
+    expect(container.querySelector<HTMLImageElement>(".panorama-preview")?.src).toMatch(/^data:image\/jpeg;base64,/);
+    const select=container.querySelector<HTMLSelectElement>("#video-projection")!;
+    await act(async () => { select.value="equirectangular";select.dispatchEvent(new Event("change",{bubbles:true})); });
+    expect(container.querySelector<HTMLButtonElement>(".primary-action")!.disabled).toBe(false);
+    mocks.startPipeline.mockImplementationOnce(() => new Promise(() => {}));
+    await act(async () => container.querySelector<HTMLButtonElement>(".primary-action")!.click());await flush();
+    expect(mocks.startPipeline.mock.calls.at(-1)?.[5]).toBe("equirectangular");
+  });
+
   it("keeps settings available and persists the runtime monitor preference locally", async () => {
     const settingsButton = container.querySelector<HTMLButtonElement>(".settings-action:not(.language-action)")!;
     expect(settingsButton).not.toBeNull();
