@@ -338,10 +338,10 @@ fn validate_colmap_database(
         SplatError::Process(format!("无法校验导入项目的 COLMAP 数据库：{error}"))
     })?;
     let camera_matches = cameras.first().is_some_and(|stored| {
-        let chunks = stored.4.chunks_exact(8);
+        let (chunks, remainder) = stored.4.as_chunks::<8>();
         let params = chunks
-            .clone()
-            .map(|bytes| f64::from_le_bytes(bytes.try_into().expect("eight-byte chunk")))
+            .iter()
+            .map(|bytes| f64::from_le_bytes(*bytes))
             .collect::<Vec<_>>();
         let params_match = params.len() == camera.params.len()
             && params.iter().zip(&camera.params).all(|(left, right)| {
@@ -352,7 +352,7 @@ fn validate_colmap_database(
             && stored.1 == camera.model_id
             && stored.2 == camera.width
             && stored.3 == camera.height
-            && chunks.remainder().is_empty()
+            && remainder.is_empty()
             && params_match
     });
     if cameras.len() != 1 || !camera_matches {
@@ -1232,10 +1232,56 @@ pub async fn relink_imported_project(
 #[cfg(test)]
 mod tests {
     use super::{
-        fingerprint_files, import_format, scan_files, sog_allowed_files, ImportedGaussianFormat,
+        fingerprint_files, import_format, scan_files, sog_allowed_files, validate_colmap_database,
+        ImportedGaussianFormat,
     };
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn imported_database_camera_rejects_malformed_parameter_blobs() {
+        let root = tempdir().unwrap();
+        let database = root.path().join("database.db");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE cameras (camera_id INTEGER PRIMARY KEY, model INTEGER, width INTEGER, height INTEGER, params BLOB);
+                 CREATE TABLE images (name TEXT, camera_id INTEGER);",
+            )
+            .unwrap();
+        let camera = crate::reconstruction::colmap_model::ColmapCamera {
+            id: 1,
+            model_id: 2,
+            model: "SIMPLE_RADIAL".into(),
+            width: 640,
+            height: 480,
+            params: vec![600.5, 320.25, 240.75, 0.125],
+        };
+        let valid: Vec<u8> = camera
+            .params
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        connection
+            .execute("INSERT INTO cameras VALUES (1, 2, 640, 480, ?1)", [&valid])
+            .unwrap();
+        validate_colmap_database(&database, &camera, &[]).unwrap();
+
+        let mut trailing_byte = valid.clone();
+        trailing_byte.push(0);
+        for malformed in [
+            trailing_byte,
+            valid[..valid.len() - 1].to_vec(),
+            valid[..valid.len() - 8].to_vec(),
+            vec![0_u8; valid.len()],
+            Vec::new(),
+        ] {
+            connection
+                .execute("UPDATE cameras SET params = ?1", [&malformed])
+                .unwrap();
+            assert!(validate_colmap_database(&database, &camera, &[]).is_err());
+        }
+    }
 
     #[test]
     fn recognizes_supported_gaussian_formats_only() {

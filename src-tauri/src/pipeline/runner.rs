@@ -4506,14 +4506,15 @@ fn validate_database_camera(database: &Path, camera: &ColmapCamera) -> Result<()
             camera.id
         )));
     };
-    let stored_params = params
-        .chunks_exact(8)
-        .map(|bytes| f64::from_le_bytes(bytes.try_into().expect("eight-byte chunk")))
+    let (chunks, remainder) = params.as_chunks::<8>();
+    let stored_params = chunks
+        .iter()
+        .map(|bytes| f64::from_le_bytes(*bytes))
         .collect::<Vec<_>>();
     if model != camera.model_id
         || width != camera.width as i64
         || height != camera.height as i64
-        || !params.chunks_exact(8).remainder().is_empty()
+        || !remainder.is_empty()
         || stored_params != camera.params
     {
         return Err(SplatError::Process(
@@ -4964,6 +4965,16 @@ mod tests {
         };
 
         validate_database_camera(&database, &camera).unwrap();
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        for malformed in [vec![0_u8; 33], vec![0_u8; 31], vec![0_u8; 24], Vec::new()] {
+            connection
+                .execute("UPDATE cameras SET params = ?1", [&malformed])
+                .unwrap();
+            assert!(validate_database_camera(&database, &camera).is_err());
+        }
+        connection
+            .execute("UPDATE cameras SET params = ?1", [vec![0_u8; 32]])
+            .unwrap();
         assert!(validate_database_camera(
             &database,
             &ColmapCamera {
