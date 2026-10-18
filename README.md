@@ -254,7 +254,7 @@ OOOSplat 默认开启匿名使用统计，用于了解稳定性和各阶段耗�
 
 | 引擎 | 固定版本/构建 | 用途 |
 | --- | --- | --- |
-| FFmpeg / FFprobe | Windows x64 8.1 系列 LGPL shared 锁定构建（n8.1.3-14-g330caae0c1）；macOS arm64 8.1.2 LGPL shared；Ubuntu 系统包 | 视频分析与抽帧 |
+| FFmpeg / FFprobe | Windows x64 8.1 系列 LGPL shared 月末锁定构建（n8.1.3-9-g29e619e767）；macOS arm64 8.1.2 LGPL shared；Ubuntu 系统包 | 视频分析与抽帧 |
 | COLMAP | 4.2.1 同一 commit；Windows/Linux CUDA + Caspar/Ceres；macOS Ceres CPU | 特征、匹配和相机重建 |
 | Brush | OOOBrush ooo-v1.0.0；Windows/Linux x64、macOS arm64 | 无界面 Gaussian Splatting 训练与 PLY 导出 |
 
@@ -262,7 +262,7 @@ Windows、Ubuntu 和 macOS 的来源与校验策略分别记录在 [`engines/man
 
 第三方许可和通知位于 [`licenses/`](licenses/)：
 
-- FFmpeg：LGPL-2.1-or-later，本项目选用的构建禁用 GPL/nonfree 组件。
+- FFmpeg：Windows 构建为 LGPL-3.0-or-later，macOS 构建为 LGPL-2.1-or-later；均禁用 GPL/nonfree 组件。
 - COLMAP：BSD-3-Clause。
 - Brush：Apache-2.0。
 

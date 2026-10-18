@@ -252,7 +252,7 @@ Consent is separate and one-time: you can send a report even with anonymous anal
 
 | Engine | Pinned version/build | Purpose |
 | --- | --- | --- |
-| FFmpeg / FFprobe | Windows x64 pinned 8.1-series LGPL shared build (n8.1.3-14-g330caae0c1); macOS arm64 8.1.2 LGPL shared; Ubuntu system packages | Video analysis and frame extraction |
+| FFmpeg / FFprobe | Windows x64 pinned 8.1-series LGPL shared month-end build (n8.1.3-9-g29e619e767); macOS arm64 8.1.2 LGPL shared; Ubuntu system packages | Video analysis and frame extraction |
 | COLMAP | 4.2.1 same commit; Windows/Linux CUDA + Caspar/Ceres; macOS Ceres CPU | Feature extraction, matching, and camera reconstruction |
 | Brush | OOOBrush ooo-v1.0.0; Windows/Linux x64, macOS arm64 | Headless Gaussian Splatting training and PLY export |
 
@@ -260,7 +260,7 @@ Windows, Ubuntu, and macOS source and integrity policies are recorded in [`engin
 
 Third-party licenses and notices are in [`licenses/`](licenses/):
 
-- FFmpeg: LGPL-2.1-or-later; the selected build disables GPL/nonfree components.
+- FFmpeg: LGPL-3.0-or-later on Windows, LGPL-2.1-or-later on macOS; both builds disable GPL/nonfree components.
 - COLMAP: BSD-3-Clause.
 - Brush: Apache-2.0.
 
