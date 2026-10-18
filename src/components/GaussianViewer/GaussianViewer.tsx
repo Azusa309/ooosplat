@@ -63,8 +63,6 @@ import {
   beginGaussianVideoExport,
   cancelGaussianVideoExport,
   commitGaussianVideoExport,
-  exportTransformedGaussian,
-  onGaussianExportProgress,
   revealFile,
   readGaussianPreviewChunk,
 } from "../../lib/backend";
@@ -75,7 +73,6 @@ import { useGaussianTransformStore } from "../../stores/gaussianTransformStore";
 import type {
   GaussianCrop,
   GaussianEditorTool,
-  GaussianExportProgress,
   GaussianOrthographicView,
   GaussianTransform,
   GaussianVideoExportResult,
@@ -135,6 +132,8 @@ import { ModelTransformGizmo } from "./ModelTransformGizmo";
 import { modelPivotFromPly, rotateAroundModelCenter, type ModelPivot } from "./ModelTransformMath";
 import { readGizmoMode, saveGizmoMode, type GizmoMode } from "./GizmoPreferences";
 import { PlyExportDialog, type PlyExportDialogState } from "./PlyExportDialog";
+import { createModelExport, type ModelExportOperation } from "../../lib/modelExport";
+import type { ModelFormat } from "../../lib/modelExportTypes";
 
 type ViewerMode = "adjust" | "preview";
 type ViewportPhase = "initializing" | "loading" | "mounting" | "ready" | "error";
@@ -1014,7 +1013,10 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
   const [savingEdits, setSavingEdits] = useState(false);
   const [saveNotice, setSaveNotice] = useState<"saved" | "viewFailed" | null>(null);
   const [gaussianExportDialog, setGaussianExportDialog] = useState<PlyExportDialogState>({ phase: "closed" });
-  const [gaussianExportProgress, setGaussianExportProgress] = useState(0);
+  const [gaussianExportProgress, setGaussianExportProgress] = useState<number | null>(0);
+  const [modelFormat, setModelFormat] = useState<ModelFormat>("ply");
+  const modelOperationRef = useRef<ModelExportOperation | null>(null);
+  const modelAttemptRef = useRef(0);
   const [gaussianExportResult, setGaussianExportResult] = useState<string | null>(null);
   const [animationStatus, setAnimationStatus] = useState<AnimationStatus>({ phase: "reveal", elapsedSeconds: 0 });
   const [videoCapability, setVideoCapability] = useState(INITIAL_VIDEO_CAPABILITY);
@@ -1045,7 +1047,7 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
 
   const onStatus = useCallback((status: ViewportStatus) => setViewport(status), []);
   const onAnimationStatus = useCallback((status: AnimationStatus) => setAnimationStatus(status), []);
-  const gaussianExporting = gaussianExportDialog.phase === "preparing" || gaussianExportDialog.phase === "exporting";
+  const gaussianExporting = !["closed", "completed", "error"].includes(gaussianExportDialog.phase);
   const operationBusy = savingEdits || navigationSaving || pendingNavigation !== null || htmlBusy || htmlConfirm || cropFreezing || gaussianExporting || !["idle", "completed", "error"].includes(videoPhase);
   const busy = operationBusy || gizmoDragging;
   const interactionBlocked = operationBusy || viewport.phase !== "ready" || cropFreezeError !== null;
@@ -1063,7 +1065,12 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
     setGaussianExportDialog({ phase: "closed" });
     setPendingNavigation(null);
     setSaveNotice(null);
-    return () => { persistence.destroy(); if (persistenceRef.current === persistence) persistenceRef.current = null; };
+    return () => {
+      modelAttemptRef.current += 1;
+      void modelOperationRef.current?.cancel().catch(() => undefined);
+      modelOperationRef.current = null;
+      persistence.destroy(); if (persistenceRef.current === persistence) persistenceRef.current = null;
+    };
   }, [store.descriptor?.projectId]);
   useEffect(() => { setSaveNotice(null); }, [store.revision]);
 
@@ -1146,16 +1153,6 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
     return () => window.clearTimeout(timeout);
   }, [rendererRevision, store.descriptor?.projectId]);
 
-  useEffect(() => {
-    let unlisten: undefined | (() => void);
-    void onGaussianExportProgress((event: GaussianExportProgress) => {
-      if (event.projectId === useGaussianTransformStore.getState().descriptor?.projectId) {
-        setGaussianExportProgress(event.progress);
-      }
-    }).then((fn) => { unlisten = fn; });
-    return () => unlisten?.();
-  }, []);
-
   useEffect(() => () => {
     videoAbortRef.current?.abort();
     const session = videoSessionRef.current;
@@ -1193,26 +1190,45 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
     catch (error) { useGaussianTransformStore.getState().setSaveState("error", error instanceof Error ? error.message : String(error)); }
     finally { exportBusyRef.current = false; setSavingEdits(false); }
   };
-  const exportGaussian = async (retry = false) => {
+  const exportGaussian = async (format: ModelFormat, retry = false) => {
     if (!store.descriptor || busy || exportBusyRef.current || (retry && gaussianExportDialog.phase !== "error")) return;
     exportBusyRef.current = true;
     setGaussianExportDialog({ phase: "preparing" });
     setGaussianExportProgress(0);
     setGaussianExportResult(null);
     setSaveNotice(null);
+    const attempt = ++modelAttemptRef.current;
+    setModelFormat(format);
     try {
       await flushEdits(retry, false);
+      if (attempt !== modelAttemptRef.current) return;
       const current = useGaussianTransformStore.getState();
-      setGaussianExportDialog({ phase: "exporting" });
-      const result = await exportTransformedGaussian(store.descriptor.projectId, current.transform, current.editing.revision);
-      setGaussianExportProgress(100);
+      const operation = createModelExport(store.descriptor.projectId, current.transform, current.editing.revision, format, (event) => {
+        if (attempt !== modelAttemptRef.current) return;
+        setGaussianExportProgress(event.progress);
+        setGaussianExportDialog({ phase: event.phase });
+      });
+      modelOperationRef.current = operation;
+      const result = await operation.export();
+      if (attempt !== modelAttemptRef.current) return;
       setGaussianExportResult(result.path);
-      setGaussianExportDialog({ phase: "completed", path: result.path });
+      setGaussianExportDialog({ phase: "completed", path: result.path, fileSize: result.fileSize });
     } catch (error) {
-      setGaussianExportDialog({ phase: "error", error: error instanceof Error ? error.message : String(error) });
+      if (attempt === modelAttemptRef.current) {
+        modelOperationRef.current = null; exportBusyRef.current = false;
+        setGaussianExportDialog({ phase: "error", error: error instanceof Error ? error.message : String(error) });
+      }
     } finally {
-      exportBusyRef.current = false;
+      if (attempt === modelAttemptRef.current) { modelOperationRef.current = null; exportBusyRef.current = false; }
     }
+  };
+  const cancelModelExport = async () => {
+    const operation = modelOperationRef.current;
+    const attempt = ++modelAttemptRef.current;
+    setGaussianExportDialog({ phase: "cancelling" });
+    try { await operation?.cancel(); if (attempt === modelAttemptRef.current) setGaussianExportDialog({ phase: "closed" }); }
+    catch (error) { if (attempt === modelAttemptRef.current) setGaussianExportDialog({ phase: "error", error: String(error) }); }
+    finally { if (attempt === modelAttemptRef.current) { modelOperationRef.current = null; exportBusyRef.current = false; } }
   };
   const closeGaussianExportDialog = () => {
     if (!gaussianExporting) setGaussianExportDialog({ phase: "closed" });
@@ -1220,13 +1236,14 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
   const revealGaussianExport = async (path: string, keepDialogOpen = true) => {
     try {
       await revealFile(path);
-      if (keepDialogOpen) setGaussianExportDialog({ phase: "completed", path });
+      if (keepDialogOpen) setGaussianExportDialog(previous => ({ ...previous, phase: "completed", path, revealError: undefined }));
     } catch (error) {
-      setGaussianExportDialog({
+      setGaussianExportDialog(previous => ({
+        ...previous,
         phase: "completed",
         path,
         revealError: error instanceof Error ? error.message : String(error),
-      });
+      }));
     }
   };
 
@@ -1628,7 +1645,7 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
         </>}
         {videoBusy ? <button type="button" className="video-cancel" onClick={cancelVideo}><X size={14} />{t("viewer.cancelExport")}</button>
           : htmlBusy ? <button type="button" className="video-cancel" onClick={cancelHtml}><X size={14} />{t("viewer.cancelExport")}</button>
-          : <PreviewExportMenu mode={mode} disabled={busy || viewport.phase !== "ready"} videoSupported={videoCapability.supported} videoReason={videoCapability.reason} onPly={() => void exportGaussian()} onVideo={() => void exportVideo()} onHtml={() => setHtmlConfirm(true)} />}
+          : <PreviewExportMenu mode={mode} disabled={busy || viewport.phase !== "ready"} videoSupported={videoCapability.supported} videoReason={videoCapability.reason} onModel={format => void exportGaussian(format)} onVideo={() => void exportVideo()} onHtml={() => setHtmlConfirm(true)} />}
       </div>
     </div>
     {pipelineRunning && <div className="preview-resource-note">{t("viewer.resourceNote")}</div>}
@@ -1688,8 +1705,10 @@ export function GaussianViewer({ previewSessionId, onExit, onDisposed, pipelineR
       state={gaussianExportDialog}
       progress={gaussianExportProgress}
       onClose={closeGaussianExportDialog}
-      onRetry={() => void exportGaussian(true)}
+      onRetry={() => void exportGaussian(modelFormat, true)}
       onReveal={(path) => void revealGaussianExport(path)}
+      onCancel={() => void cancelModelExport()}
+      format={modelFormat}
     />
     {htmlConfirm && <div className="gaussian-save-backdrop" role="dialog" aria-modal="true" aria-labelledby="html-export-title" aria-describedby="html-export-description" onKeyDown={event => { if(event.key === "Escape")setHtmlConfirm(false); }}>
       <div className="gaussian-save-dialog"><div className="gaussian-save-symbol"><FileCode2 size={19} /></div><div><h2 id="html-export-title">{t("export.html")}</h2><p id="html-export-description">{t("export.htmlWarning", {size:formatBytes(Math.ceil(store.descriptor.fileSize*4/3),locale)})}</p></div><div className="gaussian-save-actions"><button autoFocus type="button" className="secondary" onClick={() => setHtmlConfirm(false)}>{t("common.cancel")}</button><button type="button" className="primary" onClick={() => void exportHtml()}><Download size={14} />{t("export.label")}</button></div></div>

@@ -385,6 +385,7 @@ h1, h2 { margin: 0; font: 650 29px/1 "Bahnschrift", "Microsoft YaHei UI", sans-s
 .import-error { margin: 18px 20px 0; padding: 11px 12px; display: flex; gap: 8px; color: #8d302b; background: #fff2f0; border: 1px solid #e8c3bf; font-size: 11px; line-height: 1.6; }
 .import-name, .import-model-choice label { display: grid; gap: 7px; color: var(--muted); font-size: 10px; font-weight: 700; }
 .import-name input, .import-model-choice select { min-width: 0; height: 36px; padding: 0 10px; color: var(--ink); background: #fff; border: 1px solid var(--line-dark); font-size: 12px; }
+.gaussian-export-dialog { max-height: calc(100vh - 48px); overflow-y: auto; }
 .import-model-choice { margin-top: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .import-summary-grid { margin-top: 18px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .import-summary-grid article { min-height: 114px; padding: 13px; display: grid; grid-template-columns: auto 1fr; align-content: start; gap: 6px 8px; background: #f0f2f5; border: 1px solid var(--line); }
@@ -555,6 +556,12 @@ h1, h2 { margin: 0; font: 650 29px/1 "Bahnschrift", "Microsoft YaHei UI", sans-s
 .preview-export-menu { position: relative; }
 .preview-export-options { position: absolute; top: calc(100% + 6px); right: 0; z-index: 61; min-width: 156px; padding: 4px; background: #f6f8fc; border: 1px solid var(--line-dark); box-shadow: 0 4px 12px rgba(13, 28, 51, .16); }
 .preview-export-options button { width: 100%; justify-content: flex-start; border-color: transparent; white-space: nowrap; }
+.preview-export-options:has(.export-model-option) { width: min(330px, calc(100vw - 48px)); max-height: calc(100vh - 100px); overflow-y: auto; }
+.preview-export-options .export-model-option { height: auto; padding: 9px 10px; align-items: flex-start; white-space: normal; }
+.export-model-option > svg { flex-shrink: 0; margin-top: 2px; }
+.export-model-option > span { display: grid; gap: 4px; text-align: left; }
+.export-model-option small, .export-model-hint { font-size: 10px; line-height: 1.5; font-weight: 400; color: #667287; }
+.export-model-hint { margin: 4px 10px 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 .preview-header-actions .export-menu-dismiss { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 60; opacity: 0; border: 0; cursor: default; }
 .html-export-progress { position: absolute; z-index: 70; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 20px; display: flex; align-items: center; gap: 12px; background: #eef1f5; border: 1px solid var(--line-dark); color: var(--navy); font-size: 12px; box-shadow: 0 4px 24px #0006; }
 .html-export-progress progress { width: 130px; accent-color: var(--blue); }

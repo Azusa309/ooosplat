@@ -110,6 +110,8 @@ PlayCanvas splat-transform
 Version: 3.10.1
 Use: Bundled in the dedicated browser worker for inspecting and converting
      imported PLY, SOG, SPZ, SPLAT, and KSPLAT models to canonical PLY. The
+     model-export worker also encodes compressed PLY, SPZ v4 and bundled SOG;
+     its local WebP WASM is included in the frontend assets (no CDN).
      Rust non-destructive exporter also adapts quaternion, log-scale, and
      real spherical-harmonics rotation behavior from this project.
 License: MIT
@@ -119,7 +121,10 @@ Upstream source: https://github.com/playcanvas/splat-transform/tree/v3.10.1
 Niantic SPZ / @adobe/spz
 ------------------------
 Version: 0.2.3
-Use: SPZ decoding dependency of PlayCanvas splat-transform.
+Use: SPZ decoding/encoding dependency of PlayCanvas splat-transform.
+     At build time, scripts/spz-csp-plugin.mjs adapts its generated JavaScript
+     binding factories to static closures. The codec/WASM is unchanged, and
+     the application does not enable unrestricted JavaScript eval.
 License: MIT (license file distributed by the package)
 License text: licenses/Niantic-SPZ-MIT.txt
 Upstream source: https://github.com/nianticlabs/spz

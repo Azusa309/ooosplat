@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 pub mod html_export;
+pub mod model_export;
 
 use crate::{
     engines::{
@@ -290,7 +291,8 @@ pub struct PreviewController {
     active: Mutex<Option<GaussianPreviewSession>>,
     lifecycle: Mutex<()>,
     metadata_write: Mutex<()>,
-    export: Mutex<()>,
+    export: std::sync::Arc<Mutex<()>>,
+    model_export: Mutex<Option<std::sync::Arc<model_export::ModelExportSession>>>,
     video_export: Mutex<Option<GaussianVideoExportSession>>,
     html_export: Mutex<Option<html_export::HtmlExportSession>>,
     edit_save: Mutex<Option<GaussianEditSaveSession>>,
@@ -1460,7 +1462,10 @@ pub async fn prepare_gaussian_preview(
     project_id: String,
 ) -> Result<GaussianPreviewDescriptor> {
     let _lifecycle = state.lifecycle.lock().await;
-    if state.html_export.lock().await.is_some() || state.video_export.lock().await.is_some() {
+    if state.html_export.lock().await.is_some()
+        || state.video_export.lock().await.is_some()
+        || state.model_export.lock().await.is_some()
+    {
         return Err(SplatError::Process(
             "导出期间不能重新加载或切换预览项目".into(),
         ));
@@ -1622,6 +1627,16 @@ pub async fn release_gaussian_preview(
 ) -> Result<()> {
     let _lifecycle = state.lifecycle.lock().await;
     let id = parse_project_id(&project_id)?;
+    let model_id = state
+        .model_export
+        .lock()
+        .await
+        .as_ref()
+        .filter(|session| session.project_id == id)
+        .map(|session| session.id);
+    if let Some(export_id) = model_id {
+        model_export::cancel_gaussian_model_export(state.clone(), export_id).await?;
+    }
     let mut html_export = state.html_export.lock().await;
     if let Some(session) = html_export
         .as_ref()
@@ -1953,9 +1968,9 @@ pub async fn begin_gaussian_video_export(
     }
     drop(active);
 
-    if state.html_export.lock().await.is_some() {
+    if state.html_export.lock().await.is_some() || state.model_export.lock().await.is_some() {
         return Err(SplatError::Process(
-            "已有 HTML 正在导出，请等待或取消。".into(),
+            "已有模型或 HTML 正在导出，请等待或取消。".into(),
         ));
     }
 
