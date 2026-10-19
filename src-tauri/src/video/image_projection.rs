@@ -165,7 +165,7 @@ fn tiff_orientation_from_file(file: &mut File, start: u64, size: u64) -> Result<
     }
     let mut entries = vec![0; bytes as usize];
     file.read_exact(&mut entries)?;
-    for entry in entries.chunks_exact(12) {
+    for entry in entries.as_chunks::<12>().0 {
         if u16_at(entry[..2].try_into().unwrap()) == 0x112 {
             if u16_at(entry[2..4].try_into().unwrap()) != 3
                 || u32_at(entry[4..8].try_into().unwrap()) != 1
@@ -899,6 +899,56 @@ mod tests {
         let mut v = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0".to_vec();
         v.extend([rotation, 0, 0, 0, 0, 0, 0, 0]);
         v
+    }
+
+    #[test]
+    fn tiff_orientation_reads_fixed_entries_in_both_byte_orders_and_rejects_truncation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("metadata.tiff");
+        for little_endian in [true, false] {
+            let word = |value: u16| {
+                if little_endian {
+                    value.to_le_bytes()
+                } else {
+                    value.to_be_bytes()
+                }
+            };
+            let long = |value: u32| {
+                if little_endian {
+                    value.to_le_bytes()
+                } else {
+                    value.to_be_bytes()
+                }
+            };
+            let mut tiff = if little_endian { b"II" } else { b"MM" }.to_vec();
+            tiff.extend(word(42));
+            tiff.extend(long(8));
+            tiff.extend(word(3));
+            // The orientation is not the first entry: preserve full 12-byte strides.
+            for (tag, value) in [(0x100, 64), (0x101, 32), (0x112, 6)] {
+                tiff.extend(word(tag));
+                tiff.extend(word(3));
+                tiff.extend(long(1));
+                tiff.extend(word(value));
+                tiff.extend([0; 2]);
+            }
+            tiff.extend(long(0));
+            std::fs::write(&path, &tiff).unwrap();
+            assert_eq!(
+                tiff_orientation_from_file(&mut File::open(&path).unwrap(), 0, tiff.len() as u64)
+                    .unwrap(),
+                6
+            );
+
+            let truncated = &tiff[..tiff.len() - 5];
+            std::fs::write(&path, truncated).unwrap();
+            assert!(tiff_orientation_from_file(
+                &mut File::open(&path).unwrap(),
+                0,
+                truncated.len() as u64
+            )
+            .is_err());
+        }
     }
     fn crc32(bytes: &[u8]) -> u32 {
         let mut crc = !0u32;

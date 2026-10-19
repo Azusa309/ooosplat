@@ -929,8 +929,10 @@ mod tests {
                 )
                 .unwrap();
             let params: Vec<f64> = bytes
-                .chunks_exact(8)
-                .map(|v| f64::from_le_bytes(v.try_into().unwrap()))
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|v| f64::from_le_bytes(*v))
                 .collect();
             assert_eq!((model, width, height, prior), (2, 8192, 5464, true));
             assert!((params[0] - 22728.65980253445).abs() < 0.01);
