@@ -57,7 +57,7 @@ fn skip(reader: &mut impl Read, bytes: u64) -> Result<()> {
     Ok(())
 }
 
-fn camera_model(model_id: i32) -> Option<(&'static str, u64)> {
+pub(super) fn camera_model(model_id: i32) -> Option<(&'static str, u64)> {
     Some(match model_id {
         0 => ("SIMPLE_PINHOLE", 3),
         1 => ("PINHOLE", 4),

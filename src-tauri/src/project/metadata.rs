@@ -578,6 +578,53 @@ mod tests {
     }
 
     #[test]
+    fn panorama_recipe_snapshot_survives_resume_and_legacy_presets_stay_legacy() {
+        let mut state = PipelineStateFile::created(Quality::High);
+        let initial = crate::presets::resolve_panorama_training_preset(
+            Quality::High,
+            true,
+            Some(8192),
+            1024,
+            10_192,
+        )
+        .unwrap();
+        state.brush_training.initial_resolved = Some(initial);
+        state.brush_training.resolved = initial.downgrade_after_oom(10_192);
+        state.brush_training.oom_retry_used = true;
+        let json = serde_json::to_vec(&state).unwrap();
+        let restored: PipelineStateFile = serde_json::from_slice(&json).unwrap();
+        assert_eq!(restored.brush_training, state.brush_training);
+        assert_eq!(
+            restored
+                .brush_training
+                .initial_resolved
+                .unwrap()
+                .preset
+                .max_splats,
+            Some(3_000_000)
+        );
+        assert_eq!(
+            restored.brush_training.resolved.unwrap().preset.max_splats,
+            Some(1_500_000)
+        );
+
+        let mut old = serde_json::to_value(crate::presets::resolve_brush_training_preset(
+            Quality::Fast,
+            true,
+            Some(8192),
+            512,
+            10_192,
+        ))
+        .unwrap();
+        old.as_object_mut().unwrap().remove("panorama");
+        let restored: crate::presets::ResolvedBrushTrainingPreset =
+            serde_json::from_value(old).unwrap();
+        assert_eq!(restored.preset.total_steps, 8000);
+        assert_eq!(restored.preset.max_splats, Some(500_000));
+        assert!(restored.panorama.is_none());
+    }
+
+    #[test]
     fn staged_resolution_plan_round_trips_without_affecting_old_states() {
         let mut state = PipelineStateFile::created(Quality::High);
         state.resolution_policy_version = Some(crate::presets::PLANNER_RESOLUTION_POLICY_VERSION);

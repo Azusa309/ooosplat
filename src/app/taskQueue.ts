@@ -1,4 +1,5 @@
 import type { TaskDraft } from "./taskWorkspace";
+import { resolvedProjection } from './generationPreflight';
 
 export type DraftDisplayStatus = "standby" | "preparing" | "queued" | "running";
 
@@ -10,9 +11,20 @@ export function draftIsRunnable(draft: TaskDraft): boolean {
 }
 
 export function draftProjectionReady(draft: TaskDraft): boolean {
-  if (draft.inputType !== "video" || draft.kind !== "generation") return true;
-  if (draft.videoProjection === "equirectangular") return !!draft.projectionDetection?.supportedErp;
-  return draft.videoProjection !== "auto" || !draft.projectionDetection?.requiresChoice;
+  if (draft.kind !== "generation") return true;
+  const projection = resolvedProjection(draft);
+  if (projection === 'equirectangular') return !!draft.projectionDetection?.supportedErp;
+  return projection !== 'auto' || !draft.projectionDetection?.requiresChoice;
+}
+
+export function firstQueueInputIssue(drafts: TaskDraft[]): { draft: TaskDraft; reason: 'checking' | 'analysis' | 'projection' } | null {
+  for (const draft of drafts) {
+    if (draft.kind !== 'generation' || draft.running || !draft.inputPath) continue;
+    if (draft.inputChecking || draft.needsValidation) return { draft, reason: 'checking' };
+    if (draft.inputError || draft.error || !draft.plan) return { draft, reason: 'analysis' };
+    if (!draftProjectionReady(draft)) return { draft, reason: 'projection' };
+  }
+  return null;
 }
 
 export function queuedDraftIds(

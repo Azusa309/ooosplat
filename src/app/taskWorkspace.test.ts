@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   createGenerationDraft,
+  draftDisplayName,
   createReshootDraft,
   loadTaskWorkspace,
   nextGenerationOrdinal,
@@ -12,6 +13,17 @@ import {
 
 describe("task workspace persistence", () => {
   beforeEach(() => localStorage.clear());
+
+  it("hides display ordinals without changing draft identities or recovery order", () => {
+    const drafts = [createGenerationDraft(1), createGenerationDraft(2)];
+    expect(drafts.map(draft => draftDisplayName(draft, '新任务', '补拍'))).toEqual(['新任务', '新任务']);
+    expect(draftDisplayName(drafts[0], 'New Task', 'Reshoot')).toBe('New Task');
+    expect(draftDisplayName({ ...drafts[0], inputPath: 'E:/media/clip.mp4' }, '新任务', '补拍')).toBe('clip.mp4');
+    saveTaskWorkspace(drafts, { kind: 'draft', id: drafts[1].id }, 3);
+    const restored = loadTaskWorkspace();
+    expect(restored.drafts.map(d => [d.id, d.ordinal])).toEqual(drafts.map(d => [d.id, d.ordinal]));
+    expect(restored.selected).toEqual({ kind: 'draft', id: drafts[1].id });
+  });
 
   it("creates a standby generation draft by default", () => {
     const workspace = loadTaskWorkspace();

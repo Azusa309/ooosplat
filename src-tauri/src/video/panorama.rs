@@ -32,6 +32,10 @@ pub enum VideoProjection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectionDetection {
+    #[serde(default)]
+    pub source_identity: String,
+    #[serde(default)]
+    pub unsupported: bool,
     pub confirmed_erp: bool,
     pub requires_choice: bool,
     pub supported_erp: bool,
@@ -88,6 +92,7 @@ pub fn detect_metadata(
     let supported_erp = mp4 && ratio && video.width >= 64 && !unsupported;
     let confirmed_erp = supported_erp && projection == "equirectangular";
     ProjectionDetection {
+        source_identity: String::new(), unsupported,
         confirmed_erp, supported_erp,
         requires_choice: !confirmed_erp && ratio && mp4,
         reason: if unsupported { "Unsupported stereo, cropped, rotated or non-ERP projection; do not select full panorama." }
@@ -98,6 +103,25 @@ pub fn detect_metadata(
     }
 }
 
+/// Local input identity; no full-video read and never sent to telemetry.
+pub fn source_identity(input: &Path) -> Result<String> {
+    if input.is_dir() {
+        return super::image_projection::source_identity(input);
+    }
+    let path = fs::canonicalize(input)?;
+    let metadata = fs::metadata(&path)?;
+    let modified = metadata
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| process_error(e.to_string()))?
+        .as_nanos();
+    let mut hash = Sha256::new();
+    hash.update(path.to_string_lossy().as_bytes());
+    hash.update(metadata.len().to_le_bytes());
+    hash.update(modified.to_le_bytes());
+    Ok(format!("{:x}", hash.finalize()))
+}
+
 pub async fn detect(
     ffprobe: &Path,
     ffmpeg: &Path,
@@ -106,6 +130,7 @@ pub async fn detect(
     manager: &ProcessManager,
     preview: bool,
 ) -> Result<ProjectionDetection> {
+    let identity = source_identity(input)?;
     let result = manager
         .clone()
         .with_output_capture_limit(64 * 1024)
@@ -137,6 +162,7 @@ pub async fn detect(
             .extension()
             .is_some_and(|s| s.eq_ignore_ascii_case("mp4")),
     );
+    detection.source_identity = identity;
     if preview && (detection.requires_choice || detection.confirmed_erp) {
         let output = std::env::temp_dir().join(format!(
             "ooosplat-panorama-preview-{}.jpg",
@@ -170,6 +196,9 @@ pub async fn detect(
         }
         let _ = fs::remove_file(&output);
     }
+    if source_identity(input)? != detection.source_identity {
+        return Err(process_error("素材文件已发生变化，请重新分析后再生成"));
+    }
     Ok(detection)
 }
 
@@ -193,6 +222,8 @@ pub struct PanoramaCheckpoint {
     pub sfm_height: u32,
     pub face_size: u32,
     pub field_of_view_degrees: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_sources: Option<Vec<super::image_projection::ImageSourceMapping>>,
 }
 impl PanoramaCheckpoint {
     pub fn new(source: &Path, quality: Quality, video: &VideoInfo) -> Result<Self> {
@@ -222,13 +253,14 @@ impl PanoramaCheckpoint {
             sfm_height: width / 2,
             face_size: face.min(width / 4),
             field_of_view_degrees: FOV_DEGREES,
+            image_sources: None,
         })
     }
 }
 pub fn fingerprint(path: &Path) -> Result<String> {
     fingerprint_cancellable(path, &tokio_util::sync::CancellationToken::new())
 }
-fn fingerprint_cancellable(
+pub(crate) fn fingerprint_cancellable(
     path: &Path,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<String> {
@@ -589,8 +621,14 @@ pub fn read_poses(model: &Path) -> Result<Vec<PosedImage>> {
 #[derive(Serialize, Deserialize)]
 struct FaceMapping {
     source_frame_index: u64,
-    timestamp_seconds: f64,
-    pts: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timestamp_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pts: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_image_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_name: Option<String>,
     erp_image_id: u32,
     erp_name: String,
     face: String,
@@ -607,6 +645,15 @@ struct CacheManifest {
 }
 
 /// One ERP + one face resident. Per-ERP atomic batches resume independently.
+pub enum TrainingCacheUpdate {
+    Faces {
+        completed: u64,
+        total: u64,
+        reused: bool,
+    },
+    Validating,
+}
+
 pub fn prepare_training_cache(
     frames: &Path,
     masks: &Path,
@@ -614,7 +661,7 @@ pub fn prepare_training_cache(
     root: &Path,
     config: &PanoramaCheckpoint,
     cancel: &tokio_util::sync::CancellationToken,
-    progress: impl Fn(u64, u64),
+    progress: impl Fn(TrainingCacheUpdate),
 ) -> Result<PathBuf> {
     if config.version != CONVERSION_VERSION
         || config.face_size == 0
@@ -640,7 +687,11 @@ pub fn prepare_training_cache(
         .parent()
         .unwrap_or(frames)
         .join("panorama-frame-times.json");
-    let times: Vec<FrameTime> = serde_json::from_slice(&fs::read(times_path)?)?;
+    let times: Vec<FrameTime> = if config.image_sources.is_some() {
+        Vec::new()
+    } else {
+        serde_json::from_slice(&fs::read(times_path)?)?
+    };
     let by_index: std::collections::HashMap<_, _> =
         times.iter().map(|t| (t.source_frame_index, t)).collect();
     if poses.is_empty() {
@@ -658,9 +709,11 @@ pub fn prepare_training_cache(
         || camera.width == 0
         || camera.height == 0
     {
-        return Err(process_error(
-            "全景缓存超过首版资源预算（解码 512 MiB / 缓存 20 GiB），请降低档位或缩短视频",
-        ));
+        return Err(process_error(if config.image_sources.is_some() {
+            super::image_projection::OVER_BUDGET
+        } else {
+            "全景缓存超过首版资源预算（解码 512 MiB / 缓存 20 GiB），请降低档位或缩短视频"
+        }));
     }
     let hashes = ["cameras.bin", "images.bin", "points3D.bin"]
         .into_iter()
@@ -726,10 +779,27 @@ pub fn prepare_training_cache(
                 {
                     return Err(process_error("Panorama mask/image dimensions differ"));
                 }
-                for (name, q) in FACES {
-                    let face = render_face(&source, mask.as_ref(), q, config.face_size, cancel)?;
+                for (face_index, (name, q)) in FACES.into_iter().enumerate() {
+                    // Image masks are thresholded Alpha for SfM, not independent
+                    // ignore regions. Do not threshold the continuous training Alpha again.
+                    let face = render_face(
+                        &source,
+                        if config.image_sources.is_some() {
+                            None
+                        } else {
+                            mask.as_ref()
+                        },
+                        q,
+                        config.face_size,
+                        cancel,
+                    )?;
                     face.save(staging.join(format!("{name}.png")))
                         .map_err(|e| process_error(e.to_string()))?;
+                    progress(TrainingCacheUpdate::Faces {
+                        completed: (index * 6 + face_index + 1) as u64,
+                        total: (poses.len() * 6) as u64,
+                        reused: false,
+                    });
                 }
                 fs::write(staging.join("complete"), b"1")?;
                 Ok(())
@@ -742,6 +812,12 @@ pub fn prepare_training_cache(
                 fs::remove_dir_all(&published)?;
             }
             fs::rename(staging, &published)?;
+        } else {
+            progress(TrainingCacheUpdate::Faces {
+                completed: ((index + 1) * 6) as u64,
+                total: (poses.len() * 6) as u64,
+                reused: true,
+            });
         }
         for (face_index, (face, q)) in FACES.iter().enumerate() {
             let source_index = Path::new(&pose.name)
@@ -750,13 +826,20 @@ pub fn prepare_training_cache(
                 .and_then(|s| s.strip_prefix("frame_"))
                 .and_then(|s| s.parse::<u64>().ok())
                 .ok_or_else(|| process_error("Panorama frame has no source index"))?;
-            let time = by_index
-                .get(&source_index)
-                .ok_or_else(|| process_error("Missing panorama timestamp mapping"))?;
+            let source_image = config
+                .image_sources
+                .as_ref()
+                .and_then(|v| v.iter().find(|s| s.source_image_index == source_index));
+            let time = by_index.get(&source_index);
+            if source_image.is_none() && time.is_none() {
+                return Err(process_error("Missing panorama timestamp mapping"));
+            }
             mappings.push(FaceMapping {
                 source_frame_index: source_index,
-                timestamp_seconds: time.timestamp_seconds,
-                pts: time.pts,
+                timestamp_seconds: time.map(|v| v.timestamp_seconds),
+                pts: time.map(|v| v.pts),
+                source_image_index: source_image.map(|v| v.source_image_index),
+                source_name: source_image.map(|v| v.source_name.clone()),
                 erp_image_id: pose.id,
                 erp_name: pose.name.clone(),
                 face: face.to_string(),
@@ -766,8 +849,8 @@ pub fn prepare_training_cache(
                 tvec: mul(*q, pose.tvec),
             });
         }
-        progress((index + 1) as u64, poses.len() as u64);
     }
+    progress(TrainingCacheUpdate::Validating);
     let mut cameras = BufWriter::new(File::create(sparse.join("cameras.bin"))?);
     cameras.write_all(&1u64.to_le_bytes())?;
     cameras.write_all(&1u32.to_le_bytes())?;
@@ -820,6 +903,11 @@ pub fn prepare_training_cache(
         dst.write_all(&0u64.to_le_bytes())?;
     }
     dst.flush()?;
+    let derived_camera = crate::reconstruction::colmap_model::read_single_camera(&sparse)?;
+    let derived_images = crate::reconstruction::colmap_model::read_registered_images(&sparse)?;
+    if derived_camera.model != "PINHOLE" || derived_images.len() != mappings.len() {
+        return Err(process_error("训练图片和相机数据校验失败"));
+    }
     let manifest = CacheManifest {
         config: config.clone(),
         sphere_sha256: hashes,
@@ -838,6 +926,194 @@ pub fn prepare_training_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Density diagnostics only: retain registered poses/points, project the
+    /// original source pixels at native resolution into an isolated cache.
+    #[test]
+    #[ignore = "Requires an existing real panorama image project; writes isolated cache only"]
+    fn native_resolution_density_diagnostic_cache() {
+        use image::ImageEncoder;
+        let project = PathBuf::from(
+            std::env::var_os("OOOSPLAT_PANORAMA_DENSITY_PROJECT")
+                .expect("Set completed image project"),
+        );
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let base = project.join("work/panorama-training");
+        let mut manifest: CacheManifest =
+            serde_json::from_slice(&fs::read(base.join("manifest.json")).unwrap()).unwrap();
+        assert!(manifest.config.image_sources.is_some());
+        assert!(manifest
+            .config
+            .image_sources
+            .as_ref()
+            .unwrap()
+            .iter()
+            .all(|source| source.orientation == 1));
+        let cache_root = workspace.join(".cache/panorama-training-v1");
+        fs::create_dir_all(&cache_root).unwrap();
+        let root = if let Some(existing) = std::env::var_os("OOOSPLAT_PANORAMA_DENSITY_CACHE") {
+            let existing = fs::canonicalize(existing).unwrap();
+            assert_eq!(
+                existing.parent().unwrap(),
+                fs::canonicalize(&cache_root).unwrap()
+            );
+            assert!(existing
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("native-faces-"));
+            let recorded: serde_json::Value =
+                serde_json::from_slice(&fs::read(existing.join("manifest.json")).unwrap()).unwrap();
+            let previous: CacheManifest = serde_json::from_value(recorded.clone()).unwrap();
+            assert_eq!(previous.sphere_sha256, manifest.sphere_sha256);
+            assert_eq!(
+                serde_json::to_value(&previous.faces).unwrap(),
+                serde_json::to_value(&manifest.faces).unwrap()
+            );
+            assert_eq!(
+                recorded["diagnosticProvenance"]["sourceProject"],
+                serde_json::to_value(&project).unwrap()
+            );
+            existing
+        } else {
+            tempfile::Builder::new()
+                .prefix("native-faces-")
+                .tempdir_in(&cache_root)
+                .unwrap()
+                .keep()
+        };
+        let sparse = root.join("sparse/0");
+        fs::create_dir_all(&sparse).unwrap();
+        let before: Vec<_> = ["cameras.bin", "images.bin", "points3D.bin"]
+            .map(|name| fingerprint(&base.join("sparse/0").join(name)).unwrap())
+            .into();
+        let mut dimensions = None;
+        for batch in manifest.faces.chunks(6) {
+            assert_eq!(batch.len(), 6);
+            let source_path = project
+                .join("source/images")
+                .join(batch[0].source_name.as_ref().unwrap());
+            let (width, height) = image::image_dimensions(&source_path).unwrap();
+            let size = (width / 4).min(1024);
+            assert_eq!(width, height * 2);
+            assert!(size >= manifest.config.face_size);
+            if let Some(previous) = dimensions {
+                assert_eq!(previous, (width, height, size));
+            }
+            dimensions = Some((width, height, size));
+            let published = root
+                .join("images")
+                .join(Path::new(&batch[0].image_name).parent().unwrap());
+            if published.join("complete").is_file()
+                && batch.iter().all(|m| {
+                    image::image_dimensions(root.join("images").join(&m.image_name))
+                        .is_ok_and(|d| d == (size, size))
+                })
+            {
+                continue;
+            }
+            let source = image::open(&source_path).unwrap().to_rgba8();
+            for mapping in batch {
+                let q = FACES
+                    .iter()
+                    .find(|(name, _)| *name == mapping.face)
+                    .unwrap()
+                    .1;
+                let face = render_face(
+                    &source,
+                    None,
+                    q,
+                    size,
+                    &tokio_util::sync::CancellationToken::new(),
+                )
+                .unwrap();
+                let destination = root.join("images").join(&mapping.image_name);
+                fs::create_dir_all(destination.parent().unwrap()).unwrap();
+                image::codecs::png::PngEncoder::new_with_quality(
+                    BufWriter::new(File::create(destination).unwrap()),
+                    image::codecs::png::CompressionType::Fast,
+                    image::codecs::png::FilterType::NoFilter,
+                )
+                .write_image(face.as_raw(), size, size, image::ExtendedColorType::Rgba8)
+                .unwrap();
+            }
+            fs::write(
+                root.join("images")
+                    .join(Path::new(&batch[0].image_name).parent().unwrap())
+                    .join("complete"),
+                b"1",
+            )
+            .unwrap();
+            if batch[0].source_image_index.unwrap_or(0).is_multiple_of(10) {
+                eprintln!(
+                    "Native face projection: {}",
+                    batch[0].source_name.as_ref().unwrap()
+                );
+            }
+        }
+        let (width, height, size) = dimensions.unwrap();
+        let mut camera = fs::read(base.join("sparse/0/cameras.bin")).unwrap();
+        assert_eq!(camera.len(), 64); // One shared PINHOLE camera.
+        assert_eq!(i32::from_le_bytes(camera[12..16].try_into().unwrap()), 1);
+        camera[16..24].copy_from_slice(&(size as u64).to_le_bytes());
+        camera[24..32].copy_from_slice(&(size as u64).to_le_bytes());
+        for (i, value) in [focal(size), focal(size), size as f64 / 2., size as f64 / 2.]
+            .iter()
+            .enumerate()
+        {
+            camera[32 + i * 8..40 + i * 8].copy_from_slice(&value.to_le_bytes());
+        }
+        fs::write(sparse.join("cameras.bin"), camera).unwrap();
+        for name in ["images.bin", "points3D.bin"] {
+            fs::copy(base.join("sparse/0").join(name), sparse.join(name)).unwrap();
+        }
+        manifest.config.face_size = size;
+        manifest.config.sfm_width = width;
+        manifest.config.sfm_height = height;
+        let mut recorded = serde_json::to_value(&manifest).unwrap();
+        recorded["diagnosticProvenance"] = serde_json::json!({
+            "sourceProject": project, "registeredPosesReused": true,
+            "sfmNotRerun": true, "sourceRgb": "original images (not upscaled prepared frames)",
+            "note": "Training cache only; no new authoritative spherical model was generated.",
+        });
+        fs::write(
+            root.join("manifest.json"),
+            serde_json::to_vec_pretty(&recorded).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("signature.json"),
+            serde_json::to_vec(&recorded).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::reconstruction::colmap_model::read_single_camera(&sparse)
+                .unwrap()
+                .width,
+            size as u64
+        );
+        assert_eq!(
+            crate::reconstruction::colmap_model::read_registered_images(&sparse)
+                .unwrap()
+                .len(),
+            manifest.faces.len()
+        );
+        for (i, name) in ["cameras.bin", "images.bin", "points3D.bin"]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(
+                fingerprint(&base.join("sparse/0").join(name)).unwrap(),
+                before[i]
+            );
+        }
+        fs::write(workspace.join(".cache/panorama-training-v1/native-cache.json"), serde_json::to_vec_pretty(&serde_json::json!({ "dataset": root, "width": width, "height": height, "faceSize": size })).unwrap()).unwrap();
+        eprintln!("Native-resolution diagnostic dataset: {}", root.display());
+    }
     #[test]
     fn vfr_and_nonzero_start_keep_actual_pts_for_initial_and_bridge_frames() {
         let times: Vec<_> = [(1000, 10.), (1001, 10.01), (1040, 10.4), (1150, 11.5)]
@@ -940,12 +1216,60 @@ mod tests {
         let config = PanoramaCheckpoint {
             version: CONVERSION_VERSION,
             source_sha256: "fixture".into(),
+            image_sources: None,
             sfm_width: 64,
             sfm_height: 32,
             face_size: 16,
             field_of_view_degrees: FOV_DEGREES,
         };
         (frames, masks, sparse, config)
+    }
+    #[test]
+    fn image_cache_has_no_video_timestamps_and_preserves_source_mapping() {
+        let temp = tempfile::tempdir().unwrap();
+        let (frames, masks, sparse, mut config) = fixture(temp.path());
+        fs::remove_file(temp.path().join("panorama-frame-times.json")).unwrap();
+        image::RgbaImage::from_pixel(64, 32, image::Rgba([30, 60, 90, 64]))
+            .save(frames.join("frame_0000000000.png"))
+            .unwrap();
+        config.image_sources = Some(vec![super::super::image_projection::ImageSourceMapping {
+            source_image_index: 0,
+            source_name: "图片2.jpg".into(),
+            source_sha256: "original-sha".into(),
+            orientation: 1,
+            prepared_name: "frame_0000000000.png".into(),
+            original: None,
+        }]);
+        let out = temp.path().join("training");
+        prepare_training_cache(
+            &frames,
+            &masks,
+            &sparse,
+            &out,
+            &config,
+            &tokio_util::sync::CancellationToken::new(),
+            |_| {},
+        )
+        .unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(out.join("manifest.json")).unwrap()).unwrap();
+        for face in manifest["faces"].as_array().unwrap() {
+            assert!(face.get("pts").is_none() && face.get("timestamp_seconds").is_none());
+            assert_eq!(face["source_name"], "图片2.jpg");
+            assert_eq!(face["source_image_index"], 0);
+            let pixels = image::open(
+                out.join("images")
+                    .join(face["image_name"].as_str().unwrap()),
+            )
+            .unwrap()
+            .into_rgba8();
+            assert!(pixels.pixels().all(|pixel| pixel.0 == [30, 60, 90, 64]));
+        }
+        assert_eq!(manifest["faces"].as_array().unwrap().len(), 6);
+        assert_eq!(
+            manifest["config"]["imageSources"][0]["source_sha256"],
+            "original-sha"
+        );
     }
     #[test]
     fn training_cache_preserves_world_points_but_replaces_erp_observations_and_tracks() {
@@ -960,7 +1284,7 @@ mod tests {
             &out,
             &config,
             &tokio_util::sync::CancellationToken::new(),
-            |_, _| {},
+            |_| {},
         )
         .unwrap();
         let derived = out.join("sparse/0");
@@ -984,8 +1308,8 @@ mod tests {
         for face in &manifest.faces {
             assert_eq!(face.erp_image_id, 99);
             assert_eq!(face.source_frame_index, 0);
-            assert_eq!(face.timestamp_seconds, 0.1);
-            assert_eq!(face.pts, 100);
+            assert_eq!(face.timestamp_seconds, Some(0.1));
+            assert_eq!(face.pts, Some(100));
             let center = mul(transpose(rotation(face.qvec)), face.tvec).map(|v| -v);
             for (a, b) in center.iter().zip([-2., 3., -5.]) {
                 assert!((a - b).abs() < 1e-9);
@@ -1000,7 +1324,7 @@ mod tests {
         let token = tokio_util::sync::CancellationToken::new();
         token.cancel();
         assert!(matches!(
-            prepare_training_cache(&frames, &masks, &sparse, &out, &config, &token, |_, _| {}),
+            prepare_training_cache(&frames, &masks, &sparse, &out, &config, &token, |_| {}),
             Err(SplatError::Cancelled)
         ));
         let run = |cfg: &PanoramaCheckpoint| {
@@ -1011,7 +1335,7 @@ mod tests {
                 &out,
                 cfg,
                 &tokio_util::sync::CancellationToken::new(),
-                |_, _| {},
+                |_| {},
             )
             .unwrap()
         };
@@ -1164,5 +1488,29 @@ mod tests {
         );
         assert!(!stereo.supported_erp);
         assert!(resolve(VideoProjection::Equirectangular, &stereo).is_err());
+    }
+    #[test]
+    fn source_identity_is_stable_and_changes_with_size_mtime_or_path() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("视频.mp4");
+        fs::write(&source, b"first").unwrap();
+        let first = source_identity(&source).unwrap();
+        assert_eq!(source_identity(&source).unwrap(), first);
+        fs::File::options()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+            ))
+            .unwrap();
+        assert_ne!(source_identity(&source).unwrap(), first);
+        let first = source_identity(&source).unwrap();
+        fs::write(&source, b"changed-input").unwrap();
+        assert_ne!(source_identity(&source).unwrap(), first);
+        let moved = root.path().join("moved.mp4");
+        fs::rename(&source, &moved).unwrap();
+        assert_ne!(source_identity(&moved).unwrap(), first);
+        assert!(source_identity(&source).is_err());
     }
 }

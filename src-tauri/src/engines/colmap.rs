@@ -867,6 +867,7 @@ mod tests {
         let config = crate::video::panorama::PanoramaCheckpoint {
             version: 1,
             source_sha256: "test".into(),
+            image_sources: None,
             sfm_width: 2048,
             sfm_height: 1024,
             face_size: 512,

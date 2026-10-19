@@ -432,9 +432,7 @@ pub(crate) fn revalidate_imported_colmap(
     }
     let camera = colmap_model::read_single_camera(&colmap.sparse_model_path)?;
     if camera.model_id == 17 {
-        return Err(SplatError::Process(
-            "全景项目首版暂不支持高清补拍；原球面重建和六面训练缓存保持独立".into(),
-        ));
+        return Err(SplatError::Process("全景项目暂不支持高清补拍。".into()));
     }
     let images = colmap_model::read_registered_images(&colmap.sparse_model_path)?;
     if images.is_empty() {
@@ -501,7 +499,7 @@ fn inspect_colmap(model: &Path, all_files: &[PathBuf]) -> ImportedColmapProvenan
         .as_ref()
         .is_some_and(|camera| camera.model_id == 17)
     {
-        Some("全景项目首版暂不支持高清补拍；原球面重建和六面训练缓存保持独立".into())
+        Some("全景项目暂不支持高清补拍。".into())
     } else if database.is_none() {
         Some("缺少 database.db".into())
     } else if images.is_none() {
