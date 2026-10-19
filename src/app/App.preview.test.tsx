@@ -7,6 +7,7 @@ import { useAppStore } from "../stores/appStore";
 import { useGaussianTransformStore } from "../stores/gaussianTransformStore";
 import { LanguageProvider } from "../i18n";
 import type { ProjectSummary } from "../types/pipeline";
+import packageMetadata from '../../package.json';
 
 const mocks = vi.hoisted(() => ({
   cancelPipeline: vi.fn(),
@@ -244,7 +245,7 @@ describe("App preview workspace", () => {
 
   it("shows the current package version and a start action without a trailing arrow", () => {
     expect(container.querySelector(".brand-name")?.textContent).toBe("OOOSplat");
-    expect(container.querySelector(".version-tag")?.textContent).toBe("LOCAL / 0.6.1");
+    expect(container.querySelector(".version-tag")?.textContent).toBe(`LOCAL / ${packageMetadata.version}`);
     const startButton = container.querySelector(".primary-action");
     expect(startButton?.textContent?.trim()).toBe("开始生成");
     expect(startButton?.querySelectorAll("svg")).toHaveLength(1);
@@ -280,7 +281,7 @@ describe("App preview workspace", () => {
     await act(async () => container.querySelector<HTMLButtonElement>(".primary-action")!.click()); await flush();
     expect(container.querySelector('.preflight-dialog')).toBeNull();
     expect(mocks.startPipeline).toHaveBeenCalledTimes(1);
-    expect(mocks.startPipeline.mock.calls[0].slice(5)).toEqual(['perspective', 'source-A']);
+    expect(mocks.startPipeline.mock.calls[0].slice(5)).toEqual(['perspective', 'source-A', 'exhaustive']);
   });
 
   it("keeps settings available and persists the runtime monitor preference locally", async () => {
@@ -339,7 +340,7 @@ describe("App preview workspace", () => {
     await act(async () => container.querySelector<HTMLButtonElement>('.input-picker > .path-picker')!.click()); await flush();
     await act(async () => container.querySelector<HTMLButtonElement>('.primary-action')!.click()); await flush();
     expect(container.querySelector('.preflight-dialog')).toBeNull();
-    expect(mocks.startPipeline.mock.calls.at(-1)?.slice(5)).toEqual(['equirectangular', 'confirmed']);
+    expect(mocks.startPipeline.mock.calls.at(-1)?.slice(5)).toEqual(['equirectangular', 'confirmed', 'exhaustive']);
   });
 
   it.each(['perspective', 'equirectangular'] as const)('replans quality without redetecting %s or resetting the chosen type', async projection => {
@@ -449,8 +450,8 @@ describe("App preview workspace", () => {
     expect(mocks.probeAndPlan).not.toHaveBeenCalled();
   });
 
-  it('rejects image-warning answers if the draft changes while confirmation is open', async () => {
-    const probe = { inputType: 'images', video: null, imageSequence: { imageCount: 20, width: 200, height: 100, requiresLargeSequenceConfirmation: false }, plan: { estimatedFrames: 20 }, projectionDetection: null };
+  it('rejects image-order answers if the draft changes while confirmation is open', async () => {
+    const probe = { inputType: 'images', video: null, imageSequence: { imageCount: 101, width: 200, height: 100, requiresLargeSequenceConfirmation: false }, plan: { estimatedFrames: 101 }, projectionDetection: null };
     mocks.selectVideo.mockResolvedValueOnce('E:/photos');
     mocks.probeAndPlan.mockResolvedValue(probe);
     await act(async () => container.querySelector<HTMLButtonElement>('.input-picker > .path-picker')!.click()); await flush();
@@ -1744,7 +1745,7 @@ describe("App preview workspace", () => {
     expect(container.querySelectorAll(".input-picker")).toHaveLength(1);
   });
 
-  it("requires confirmation before exhaustive matching more than 500 images", async () => {
+  it("requires one image-order question, not a second large-sequence warning, above 500 images", async () => {
     mocks.selectImageSequence.mockResolvedValueOnce("E:\\Photos\\large");
     mocks.probeAndPlan.mockResolvedValueOnce({
         inputType: "images",
@@ -1771,9 +1772,69 @@ describe("App preview workspace", () => {
     await flush();
 
     expect(container.querySelector('.preflight-dialog')?.textContent).toContain('501');
+    expect(container.querySelector('.preflight-dialog')?.textContent).toContain('确认图片顺序');
+    expect(container.querySelector('.preflight-dialog')?.textContent).toContain('1/1');
+    expect(container.querySelectorAll('.preflight-dialog input[type="radio"]')).toHaveLength(2);
     expect(mocks.confirmLargeImageSequence).not.toHaveBeenCalled();
     await act(async () => container.querySelector<HTMLButtonElement>('.preflight-dialog footer > button')!.click());
     expect(mocks.startPipeline).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [100, 'perspective', 'exhaustive'],
+    [101, 'perspective', 'sequential'],
+    [500, 'equirectangular', 'exhaustive'],
+    [501, 'equirectangular', 'sequential'],
+  ] as const)('passes the confirmed strategy for %i %s images (%s)', async (count, projection, strategy) => {
+    mocks.selectVideo.mockResolvedValueOnce('E:/photos');
+    mocks.probeAndPlan.mockResolvedValueOnce({ inputType: 'images', video: null, imageSequence: { imageCount: count, width: 200, height: 100, hasAlpha: false, requiresLargeSequenceConfirmation: count > 500 }, plan: { estimatedFrames: count }, projectionDetection: { sourceIdentity: 'photos-identity', confirmedErp: projection === 'equirectangular', requiresChoice: false, supportedErp: projection === 'equirectangular', reason: '', previewJpeg: [] } });
+    mocks.startPipeline.mockImplementation(() => new Promise(() => {}));
+    await act(async () => container.querySelector<HTMLButtonElement>('.input-picker > .path-picker')!.click()); await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('.primary-action')!.click(); container.querySelector<HTMLButtonElement>('.primary-action')!.click(); }); await flush();
+    if (count > 100) {
+      const submit = container.querySelector<HTMLButtonElement>('.preflight-dialog .primary-action')!;
+      expect(submit.disabled).toBe(true);
+      expect(container.querySelector('.preflight-dialog input:checked')).toBeNull();
+      expect(mocks.startPipeline).not.toHaveBeenCalled();
+      await act(async () => container.querySelector<HTMLInputElement>(`input[value="${strategy}"]`)!.click());
+      await act(async () => { submit.click(); submit.click(); }); await flush();
+    } else expect(container.querySelector('.preflight-dialog')).toBeNull();
+    expect(mocks.startPipeline).toHaveBeenCalledTimes(1);
+    expect(mocks.startPipeline.mock.calls[0][7]).toBe(strategy);
+    expect(container.querySelector('.preflight-dialog')).toBeNull();
+  });
+
+  it.each(['cancel', 'sequential', 'exhaustive'] as const)('waits on queued image order without skipping (%s)', async answer => {
+    const video = { inputType: 'video', video: { duration: 1, width: 200, height: 100 }, imageSequence: null, plan: { estimatedFrames: 6 } };
+    const images = { inputType: 'images', video: null, imageSequence: { imageCount: 101, width: 200, height: 100, hasAlpha: false, requiresLargeSequenceConfirmation: false }, plan: { estimatedFrames: 101 } };
+    mocks.probeAndPlan.mockResolvedValueOnce(video).mockResolvedValueOnce(images).mockResolvedValueOnce(video);
+    mocks.selectVideo.mockResolvedValueOnce('E:/running.mp4').mockResolvedValueOnce('E:/photos').mockResolvedValueOnce('E:/later.mp4');
+    let finishRun!: (result: unknown) => void;
+    mocks.startPipeline.mockImplementationOnce(() => new Promise(resolve => { finishRun = resolve; })).mockImplementationOnce(() => new Promise(() => {}));
+    await act(async () => container.querySelector<HTMLButtonElement>('.input-picker > .path-picker')!.click()); await flush();
+    await act(async () => container.querySelector<HTMLButtonElement>('.primary-action')!.click()); await flush();
+    const workspaceTaskId = mocks.startPipeline.mock.calls[0][4];
+    mocks.getProjectOverview.mockResolvedValue({ projectsRoot: 'E:/Projects', projects: [{ ...project, workspaceTaskId }] });
+    await act(async () => container.querySelectorAll<HTMLElement>('.draft-row')[1].click());
+    await act(async () => container.querySelector<HTMLButtonElement>('.input-picker > .path-picker')!.click()); await flush();
+    await act(async () => container.querySelector<HTMLButtonElement>('.group-add-action')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('.input-picker > .path-picker')!.click()); await flush();
+    await act(async () => container.querySelector<HTMLButtonElement>('.queue-toggle')!.click()); await flush();
+    expect(container.querySelector('.preflight-dialog')).toBeNull();
+    await act(async () => finishRun({ projectId: project.id, projectPath: project.projectPath, finalPly: project.finalPly, fileSize: 10, splatCount: 10, inputImages: 6, registeredImages: 6, registeredRatio: 1, points3d: 10, durationMs: 1, completedAt: project.completedAt, warning: null, logsDirectory: 'E:/logs' })); await flush();
+    expect(container.querySelector('.preflight-dialog')?.textContent).toContain('确认图片顺序');
+    expect(mocks.startPipeline).toHaveBeenCalledTimes(1);
+    if (answer === 'cancel') {
+      await act(async () => container.querySelector<HTMLElement>('.preflight-dialog')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))); await flush();
+      expect(container.querySelector('.queue-toggle')?.getAttribute('aria-checked')).toBe('false');
+      expect(mocks.startPipeline).toHaveBeenCalledTimes(1);
+    } else {
+      await act(async () => container.querySelector<HTMLInputElement>(`input[value="${answer}"]`)!.click());
+      await act(async () => container.querySelector<HTMLButtonElement>('.preflight-dialog .primary-action')!.click()); await flush();
+      expect(mocks.startPipeline).toHaveBeenCalledTimes(2);
+      expect(mocks.startPipeline.mock.calls[1][0]).toBe('E:/photos');
+      expect(mocks.startPipeline.mock.calls[1][7]).toBe(answer);
+    }
   });
 
   it("warns for fewer than 30 images, cancels the queue, and starts only after explicit confirmation", async () => {

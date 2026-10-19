@@ -48,7 +48,7 @@ import { createGenerationDraft, createReshootDraft, draftDisplayName, loadTaskWo
 import { displayStatusForDraft, draftIsRunnable, draftProjectionReady, firstQueueInputIssue, queuedDraftIds, reorderDrafts, type DraftDisplayStatus } from "./taskQueue";
 import { loadUiPreferences, saveUiPreferences } from "./uiPreferences";
 import { GenerationPreflightDialog, type PreflightSession } from '../components/GenerationPreflightDialog';
-import { answerIsValid, collectPreflightQuestions, preflightSnapshot, projectionIdentity, resolvedProjection, type PreflightAnswers, type PreflightQuestion } from './generationPreflight';
+import { answerIsValid, collectPreflightQuestions, imageMatchingStrategy, preflightSnapshot, projectionIdentity, resolvedProjection, type PreflightAnswers, type PreflightQuestion } from './generationPreflight';
 
 const GaussianViewer = lazy(() => import("../components/GaussianViewer").then((module) => ({ default: module.GaussianViewer })));
 const CANCELLATION_OVERLAY_DELAY_MS = 300;
@@ -522,24 +522,24 @@ export function App() {
     session?.resolve(answers);
   }
 
-  async function confirmPreflight(questions: PreflightQuestion[], finalLabel: string): Promise<boolean> {
-    if (!questions.length) return true;
-    if (preflightRef.current) return false;
+  async function confirmPreflight(questions: PreflightQuestion[], finalLabel: string): Promise<PreflightAnswers | null> {
+    if (!questions.length) return {};
+    if (preflightRef.current) return null;
     const answers = await new Promise<PreflightAnswers | null>(resolve => {
       const session = { questions, finalLabel, resolve };
       preflightRef.current = session;
       setPreflight(session);
     });
-    if (!answers || !questions.every(question => answerIsValid(question, answers[question.id]))) return false;
+    if (!answers || !questions.every(question => answerIsValid(question, answers[question.id]))) return null;
     // Apply answers atomically only to the exact task/input snapshots shown.
     for (const question of questions) {
       const current = taskWorkspaceRef.current.drafts.find(draft => draft.id === question.draft.id);
       if (!current || current.inputChecking || preflightSnapshot(current) !== question.snapshot) {
         if (current) updateDraft(current.id, { error: t('preflight.changed') });
-        return false;
+        return null;
       }
     }
-    return true;
+    return answers;
   }
 
   function showQueueInputIssue(issue: NonNullable<ReturnType<typeof firstQueueInputIssue>>) {
@@ -1308,17 +1308,17 @@ export function App() {
     if (draft.inputChecking || draft.needsValidation || !draftProjectionReady(draft)) return;
     if (preflightRef.current || queueCheckingRef.current) return;
     if (!claimRunGate()) return;
-    let largeSequenceAccepted = true;
+    let preflightAnswers: PreflightAnswers | null = null;
     try {
       const snapshot = preflightSnapshot(draft);
-      largeSequenceAccepted = await confirmPreflight(collectPreflightQuestions([draft]).filter(question => source === 'manual' || question.kind !== 'smallImages'), t('generate.start'));
+      preflightAnswers = await confirmPreflight(collectPreflightQuestions([draft]).filter(question => source === 'manual' || question.kind !== 'smallImages'), t('generate.start'));
       const current = taskWorkspaceRef.current.drafts.find(item => item.id === draftId);
-      if (!current || snapshot !== preflightSnapshot(current) || current.inputChecking || !current.inputPath || !current.plan) largeSequenceAccepted = false;
+      if (!current || snapshot !== preflightSnapshot(current) || current.inputChecking || !current.inputPath || !current.plan) preflightAnswers = null;
     } catch (error) {
       updateDraft(draft.id, { error: messageOf(error) });
-      largeSequenceAccepted = false;
+      preflightAnswers = null;
     }
-    if (!largeSequenceAccepted) {
+    if (!preflightAnswers) {
       releaseRunGate();
       if (autoRunNextRef.current) setAutoQueueEnabled(false);
       return;
@@ -1346,7 +1346,7 @@ export function App() {
     let promoted = false;
     let nextIndex = 0;
     try {
-      const result = await startPipeline(draft.inputPath, draft.quality, store.projectsRoot, draft.plannerEnabled, draft.id, resolvedProjection(taskWorkspaceRef.current.drafts.find(item => item.id === draft.id) ?? draft), draft.projectionDetection?.sourceIdentity);
+      const result = await startPipeline(draft.inputPath, draft.quality, store.projectsRoot, draft.plannerEnabled, draft.id, resolvedProjection(taskWorkspaceRef.current.drafts.find(item => item.id === draft.id) ?? draft), draft.projectionDetection?.sourceIdentity, imageMatchingStrategy(draft, preflightAnswers));
       setLiveElapsedMs((current) => Math.max(current, result.durationMs));
       store.setResult(result);
       store.setPhase("completed");
@@ -1912,8 +1912,6 @@ export function App() {
           <Blend size={17} />
           <span><strong>{selectedDraft.inputType === "images" ? t("alpha.imagesTitle") : t("alpha.videoTitle")}</strong><small>{selectedDraft.inputType === "images" ? t("alpha.imagesHint") : t("alpha.videoHint", { format: selectedDraft.video?.pixelFormat || "Alpha" })}</small></span>
         </div>}
-
-        {selectedDraft.imageSequence?.requiresLargeSequenceConfirmation && <div className="sequence-warning" role="status"><CircleAlert size={16} /><span><strong>{t("sequence.title")}</strong><small>{t("sequence.hint")}</small></span></div>}
 
         <button className="primary-action" type="button" disabled={runBusy || queueChecking || !!preflight || selectedDraft.inputChecking || selectedDraft.needsValidation || !draftProjectionReady(selectedDraft) || !selectedDraft.inputPath || !selectedDraft.plan || !store.projectsRoot || missingEngines.length > 0} onClick={() => void generate()}><Play size={16} fill="currentColor" />{t("generate.start")}</button>
         {detailErrorBanner}

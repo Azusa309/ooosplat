@@ -485,6 +485,7 @@ pub enum RunnerUpdate {
 }
 
 pub struct PipelineRunner {
+    image_matching_strategy: crate::project::ImageMatchingStrategy,
     video_projection: crate::video::panorama::VideoProjection,
     lifecycle: Option<Arc<dyn Fn(RunnerUpdate) + Send + Sync>>,
     input_boundary: Option<PathBuf>,
@@ -508,6 +509,20 @@ fn reshoot_project_name(source_name: &str) -> String {
     format!("{source_name}_补拍")
 }
 
+fn image_matching_policy(
+    input: ProjectInputType,
+    strategy: crate::project::ImageMatchingStrategy,
+    quality: Quality,
+    planner_enabled: bool,
+) -> (bool, bool) {
+    let sequential = input == ProjectInputType::Video
+        || strategy == crate::project::ImageMatchingStrategy::Sequential;
+    (
+        sequential,
+        sequential && quality.loop_detection_enabled(planner_enabled),
+    )
+}
+
 impl PipelineRunner {
     pub fn new(engines: EnginePaths, emit: impl Fn(PipelineEvent) + Send + Sync + 'static) -> Self {
         Self::new_with_planner(engines, true, emit)
@@ -520,6 +535,7 @@ impl PipelineRunner {
     ) -> Self {
         Self {
             video_projection: crate::video::panorama::VideoProjection::Auto,
+            image_matching_strategy: crate::project::ImageMatchingStrategy::default(),
             engines,
             lifecycle: None,
             input_boundary: None,
@@ -555,6 +571,14 @@ impl PipelineRunner {
         projection: crate::video::panorama::VideoProjection,
     ) -> Self {
         self.video_projection = projection;
+        self
+    }
+
+    pub fn with_image_matching_strategy(
+        mut self,
+        strategy: crate::project::ImageMatchingStrategy,
+    ) -> Self {
+        self.image_matching_strategy = strategy;
         self
     }
 
@@ -1297,6 +1321,9 @@ impl PipelineRunner {
             .await?;
         let mut state = project_manager.read_state(&paths.state).await?;
         state.video_projection = self.video_projection;
+        if state.input_type == ProjectInputType::Images {
+            state.image_matching_strategy = self.image_matching_strategy;
+        }
         state.configuration = Some((*crate::presets::pipeline_optimization_config()).clone());
         state.planner_enabled = self.planner_enabled;
         state.resolution_policy_version = self
@@ -2439,6 +2466,58 @@ impl PipelineRunner {
         })
     }
 
+    async fn temporary_png_focal_preflight(
+        &self,
+        project_manager: &ProjectManager,
+        paths: &ProjectPaths,
+        state: &mut PipelineStateFile,
+    ) -> Result<Option<crate::video::temporary_png_focal_workaround::FocalOverride>> {
+        use crate::video::temporary_png_focal_workaround::{detect, Request};
+        let focal = detect(
+            &self.engines.colmap,
+            &self.process_manager,
+            Request {
+                images: &paths.colmap_frames,
+                image_list: None,
+                ordinary_images: true,
+                camera_model: "SIMPLE_RADIAL",
+                single_camera: true,
+                explicit_params: None,
+                existing_camera_id: None,
+                calibrated: false,
+            },
+        )
+        .await;
+        let message = if let Some(focal) = &focal {
+            let invalidated = apply_temporary_png_focal_checkpoint(
+                project_manager,
+                paths,
+                state,
+                &focal.checkpoint,
+            )
+            .await?;
+            format!("[TemporaryPngFocal] enabled=true image={} focalLength={} xResolution={} unit={} cameraParams={} cacheInvalidated={invalidated}",
+                focal.checkpoint.image_name, focal.raw_focal_length, focal.raw_x_resolution,
+                focal.unit, focal.camera_params())
+        } else {
+            "[TemporaryPngFocal] enabled=false (input/runtime not confirmed applicable)".to_owned()
+        };
+        self.events.send(
+            // A preflight log must not advance progress before a lifecycle stage.
+            PipelineStage::Created,
+            Some(PipelineEngine::System),
+            EventKind::Log,
+            EventLevel::Info,
+            None,
+            true,
+            message,
+            None,
+            None,
+            None,
+        );
+        Ok(focal)
+    }
+
     async fn run_project(
         &self,
         project_manager: &ProjectManager,
@@ -2560,6 +2639,24 @@ impl PipelineRunner {
             ));
         }
         archive_incompatible_colmap_input_cache(paths, &state).await?;
+        // Temporary #73 preflight MUST precede checkpoint/database reuse.
+        let ordinary_images = metadata.input_type == ProjectInputType::Images
+            && metadata.imported.is_none()
+            && metadata.reshoot.is_none()
+            && state.panorama.is_none();
+        let mut focal_checked = false;
+        let mut focal_override = None;
+        if ordinary_images
+            && state.frames.as_ref().is_some_and(|frames| {
+                frames.colmap_input_version == Some(COLMAP_INPUT_VERSION)
+                    && frames.extracted_frames.is_some_and(|count| count > 0)
+            })
+        {
+            focal_override = self
+                .temporary_png_focal_preflight(project_manager, paths, &mut state)
+                .await?;
+            focal_checked = true;
+        }
         recover_interrupted_publish(paths, &state).await?;
         normalize_checkpoints(paths, &mut state).await?;
         project_manager.write_state(&paths.state, &state).await?;
@@ -2609,6 +2706,8 @@ impl PipelineRunner {
                 );
                 prepared
             } else {
+                focal_checked = false;
+                focal_override = None;
                 reset_directory(&paths.frames).await?;
                 reset_directory(&paths.colmap_frames).await?;
                 reset_directory(&paths.masks).await?;
@@ -2687,6 +2786,12 @@ impl PipelineRunner {
                 project_manager.write_state(&paths.state, &state).await?;
                 prepared
             };
+        if ordinary_images && !focal_checked {
+            focal_override = self
+                .temporary_png_focal_preflight(project_manager, paths, &mut state)
+                .await?;
+        }
+        let camera_params = focal_override.as_ref().map(|focal| focal.camera_params());
         let source_duration_seconds = prepared.video.as_ref().map(|video| video.duration);
         self.record_frame_metrics(&state, prepared.extracted_frames, Some(&prepared.plan));
 
@@ -2799,6 +2904,7 @@ impl PipelineRunner {
                     &self.process_manager,
                     observer,
                     gpu_index,
+                    camera_params.as_deref(),
                 )
                 .await?;
             } else {
@@ -2813,6 +2919,7 @@ impl PipelineRunner {
                     &self.process_manager,
                     observer,
                     gpu_index,
+                    camera_params.as_deref(),
                 )
                 .await?;
             }
@@ -2826,13 +2933,18 @@ impl PipelineRunner {
             );
         }
 
-        let loop_detection = prepared.input_type == ProjectInputType::Video
-            && quality.loop_detection_enabled(state.planner_enabled);
+        // Resumes deliberately consult the persisted strategy, never the new-run builder.
+        let (sequential_matching, loop_detection) = image_matching_policy(
+            prepared.input_type,
+            state.image_matching_strategy,
+            quality,
+            state.planner_enabled,
+        );
         if state.matching_complete {
             self.events.stage(
                 PipelineStage::Matching,
                 1.0,
-                if prepared.input_type == ProjectInputType::Images {
+                if !sequential_matching {
                     "已复用穷举匹配检查点"
                 } else {
                     "已复用顺序匹配检查点"
@@ -2844,7 +2956,7 @@ impl PipelineRunner {
                 0.0,
                 format!(
                     "COLMAP 正在进行 {backend_label} {}",
-                    if prepared.input_type == ProjectInputType::Images {
+                    if !sequential_matching {
                         "穷举匹配"
                     } else if loop_detection {
                         "顺序匹配（已开启闭环检测）"
@@ -2859,7 +2971,7 @@ impl PipelineRunner {
                 Some(prepared.extracted_frames),
                 ObserverMode::Matching,
             ));
-            if prepared.input_type == ProjectInputType::Images {
+            if !sequential_matching {
                 colmap::match_exhaustive(
                     &self.engines.colmap,
                     &database,
@@ -2887,7 +2999,7 @@ impl PipelineRunner {
             self.events.stage(
                 PipelineStage::Matching,
                 1.0,
-                if prepared.input_type == ProjectInputType::Images {
+                if !sequential_matching {
                     "穷举匹配完成"
                 } else if loop_detection {
                     "顺序匹配（已开启闭环检测）完成"
@@ -3924,6 +4036,7 @@ impl PipelineRunner {
                 ObserverMode::BracketProgress,
             )),
             gpu_index,
+            None,
         )
         .await?;
 
@@ -4724,6 +4837,77 @@ async fn validate_image_dimensions(
     .map_err(|error| SplatError::Process(format!("补拍画面校验失败：{error}")))?
 }
 
+/// Temporary #73 hook. Never archive the (potentially hard-linked) pictures,
+/// masks, final.ply or edits. Persist the reuse barrier BEFORE moving caches.
+async fn apply_temporary_png_focal_checkpoint(
+    manager: &ProjectManager,
+    paths: &ProjectPaths,
+    state: &mut PipelineStateFile,
+    checkpoint: &crate::video::temporary_png_focal_workaround::Checkpoint,
+) -> Result<bool> {
+    if state.temporary_png_focal.as_ref() == Some(checkpoint) {
+        return Ok(false);
+    }
+    let mut caches = Vec::new();
+    for (path, name) in [(&paths.colmap, "colmap"), (&paths.brush, "brush")] {
+        if path.exists() {
+            if tokio::fs::symlink_metadata(path)
+                .await?
+                .file_type()
+                .is_symlink()
+            {
+                return Err(SplatError::InvalidPath(path.clone()));
+            }
+            if tokio::fs::read_dir(path)
+                .await?
+                .next_entry()
+                .await?
+                .is_some()
+            {
+                caches.push((path.clone(), name));
+            }
+        }
+    }
+    let invalidated = !caches.is_empty()
+        || state.features_complete
+        || state.matching_complete
+        || state.reconstruction_complete
+        || state.brush_complete;
+    state.features_complete = false;
+    state.matching_complete = false;
+    state.reconstruction_complete = false;
+    state.brush_complete = false;
+    state.brush_training = Default::default();
+    state.bridge_backfill = Default::default();
+    state.stage = PipelineStage::ExtractingFrames;
+    state.temporary_png_focal = None;
+    manager.write_state(&paths.state, state).await?;
+    if !caches.is_empty() {
+        let archive = paths
+            .work
+            .join("cache-archive")
+            .join(format!("temporary-png-focal-v1-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&archive).await?;
+        let mut moved = Vec::new();
+        for (source, name) in caches {
+            let destination = archive.join(name);
+            if let Err(error) = tokio::fs::rename(&source, &destination).await {
+                for (original, saved) in moved.into_iter().rev() {
+                    // State stays non-reusable even if rollback itself fails.
+                    let _ = tokio::fs::rename(saved, original).await;
+                }
+                return Err(SplatError::Process(format!(
+                    "Cannot archive temporary PNG focal cache: {error}"
+                )));
+            }
+            moved.push((source, destination));
+        }
+    }
+    state.temporary_png_focal = Some(checkpoint.clone());
+    manager.write_state(&paths.state, state).await?;
+    Ok(invalidated)
+}
+
 async fn archive_incompatible_colmap_input_cache(
     paths: &ProjectPaths,
     state: &PipelineStateFile,
@@ -5406,6 +5590,65 @@ pub fn default_engine_paths(engine_root: Option<PathBuf>) -> EnginePaths {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_matching_dispatch_preserves_video_and_quality_loop_policy() {
+        use crate::project::ImageMatchingStrategy::{Exhaustive, Sequential};
+        for quality in [Quality::Fast, Quality::Balanced, Quality::High] {
+            for planner in [false, true] {
+                assert_eq!(
+                    image_matching_policy(ProjectInputType::Images, Exhaustive, quality, planner),
+                    (false, false)
+                );
+                assert_eq!(
+                    image_matching_policy(ProjectInputType::Images, Sequential, quality, planner),
+                    (true, quality.loop_detection_enabled(planner))
+                );
+                for strategy in [Sequential, Exhaustive] {
+                    assert_eq!(
+                        image_matching_policy(ProjectInputType::Video, strategy, quality, planner),
+                        (true, quality.loop_detection_enabled(planner))
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn resumed_matching_policy_uses_saved_state_not_new_runner_preference() {
+        use crate::project::ImageMatchingStrategy::{Exhaustive, Sequential};
+        let directory = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::for_diagnostics(directory.path().to_path_buf());
+        for strategy in [Sequential, Exhaustive] {
+            let mut state = PipelineStateFile::created_for(Quality::Fast, ProjectInputType::Images);
+            state.image_matching_strategy = strategy;
+            state.matching_complete = true;
+            let path = directory.path().join("state.json");
+            manager.write_state(&path, &state).await.unwrap();
+            let runner = PipelineRunner::new(default_engine_paths(None), |_| {})
+                .with_image_matching_strategy(if strategy == Sequential {
+                    Exhaustive
+                } else {
+                    Sequential
+                });
+            let restored = manager.read_state(&path).await.unwrap();
+            assert_ne!(
+                restored.image_matching_strategy,
+                runner.image_matching_strategy
+            );
+            assert_eq!(
+                image_matching_policy(
+                    restored.input_type,
+                    restored.image_matching_strategy,
+                    restored.preset,
+                    restored.planner_enabled
+                )
+                .0,
+                strategy == Sequential
+            );
+            assert!(restored.matching_complete);
+        }
+    }
 
     #[tokio::test]
     #[ignore = "Requires real ERP photos and bundled engines; isolated cache only"]
@@ -6338,6 +6581,151 @@ mod tests {
 
         assert!(!paths.project.join("final.ply").exists());
         assert!(paths.brush.join("final.ply.tmp").is_file());
+    }
+
+    fn png_focal_checkpoint_fixture() -> crate::video::temporary_png_focal_workaround::Checkpoint {
+        crate::video::temporary_png_focal_workaround::Checkpoint {
+            version: 1,
+            image_name: "frame_000001.png".into(),
+            sha256: "fixture".into(),
+            width: 8192,
+            height: 5464,
+            camera_params: [22728.66, 4096.0, 2732.0, 0.0],
+        }
+    }
+
+    #[tokio::test]
+    async fn temporary_png_focal_cache_barrier_preserves_images_and_published_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = ProjectPaths::existing(uuid::Uuid::nil(), temp.path().to_path_buf());
+        let manager = ProjectManager::for_diagnostics(temp.path().to_path_buf());
+        for dir in [
+            &paths.frames,
+            &paths.colmap_frames,
+            &paths.masks,
+            &paths.colmap,
+            &paths.brush,
+        ] {
+            tokio::fs::create_dir_all(dir).await.unwrap();
+            tokio::fs::write(dir.join("sentinel"), b"original")
+                .await
+                .unwrap();
+        }
+        for name in ["final.ply", "edit.ply", "editing.json"] {
+            tokio::fs::write(paths.project.join(name), b"published")
+                .await
+                .unwrap();
+        }
+        let mut state = PipelineStateFile::created_for(Quality::Balanced, ProjectInputType::Images);
+        state.frames = Some(FrameState {
+            extracted_frames: Some(2),
+            ..FrameState::default()
+        });
+        state.features_complete = true;
+        state.matching_complete = true;
+        state.reconstruction_complete = true;
+        state.brush_complete = true;
+        let checkpoint = png_focal_checkpoint_fixture();
+        assert!(
+            apply_temporary_png_focal_checkpoint(&manager, &paths, &mut state, &checkpoint)
+                .await
+                .unwrap()
+        );
+        let saved = manager.read_state(&paths.state).await.unwrap();
+        assert!(
+            !saved.features_complete
+                && !saved.matching_complete
+                && !saved.reconstruction_complete
+                && !saved.brush_complete
+        );
+        assert_eq!(saved.temporary_png_focal.as_ref(), Some(&checkpoint));
+        assert_eq!(saved.frames.unwrap().extracted_frames, Some(2));
+        assert!(!paths.colmap.exists() && !paths.brush.exists());
+        for dir in [&paths.frames, &paths.colmap_frames, &paths.masks] {
+            assert_eq!(
+                tokio::fs::read(dir.join("sentinel")).await.unwrap(),
+                b"original"
+            );
+        }
+        for name in ["final.ply", "edit.ply", "editing.json"] {
+            assert_eq!(
+                tokio::fs::read(paths.project.join(name)).await.unwrap(),
+                b"published"
+            );
+        }
+        let mut archives = tokio::fs::read_dir(paths.work.join("cache-archive"))
+            .await
+            .unwrap();
+        let archive = archives.next_entry().await.unwrap().unwrap().path();
+        assert!(archives.next_entry().await.unwrap().is_none());
+        for dir in ["colmap", "brush"] {
+            assert_eq!(
+                tokio::fs::read(archive.join(dir).join("sentinel"))
+                    .await
+                    .unwrap(),
+                b"original"
+            );
+        }
+        // Identical policy/input/params is a true no-op, even with new cached features.
+        tokio::fs::create_dir_all(&paths.colmap).await.unwrap();
+        tokio::fs::write(paths.colmap.join("database.db"), b"new correct database")
+            .await
+            .unwrap();
+        state.features_complete = true;
+        assert!(
+            !apply_temporary_png_focal_checkpoint(&manager, &paths, &mut state, &checkpoint)
+                .await
+                .unwrap()
+        );
+        assert!(state.features_complete && paths.colmap.join("database.db").exists());
+        let mut changed = checkpoint.clone();
+        changed.sha256 = "changed".into();
+        assert!(
+            apply_temporary_png_focal_checkpoint(&manager, &paths, &mut state, &changed)
+                .await
+                .unwrap()
+        );
+        assert!(!state.features_complete);
+    }
+
+    #[tokio::test]
+    async fn temporary_png_focal_archive_failure_keeps_a_durable_reuse_barrier() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = ProjectPaths::existing(uuid::Uuid::nil(), temp.path().to_path_buf());
+        let manager = ProjectManager::for_diagnostics(temp.path().to_path_buf());
+        tokio::fs::create_dir_all(&paths.colmap).await.unwrap();
+        tokio::fs::write(paths.colmap.join("database.db"), b"old wrong database")
+            .await
+            .unwrap();
+        // A file where the archive directory should be forces a safe failure.
+        tokio::fs::write(paths.work.join("cache-archive"), b"blocked")
+            .await
+            .unwrap();
+        let mut state = PipelineStateFile::created_for(Quality::High, ProjectInputType::Images);
+        state.features_complete = true;
+        state.brush_complete = true;
+        let checkpoint = png_focal_checkpoint_fixture();
+        assert!(
+            apply_temporary_png_focal_checkpoint(&manager, &paths, &mut state, &checkpoint)
+                .await
+                .is_err()
+        );
+        let mut saved = manager.read_state(&paths.state).await.unwrap();
+        assert!(
+            !saved.features_complete
+                && !saved.brush_complete
+                && saved.temporary_png_focal.is_none()
+        );
+        assert!(paths.colmap.join("database.db").exists());
+        tokio::fs::remove_file(paths.work.join("cache-archive"))
+            .await
+            .unwrap();
+        // Retrying after the interruption cannot certify the old database.
+        apply_temporary_png_focal_checkpoint(&manager, &paths, &mut saved, &checkpoint)
+            .await
+            .unwrap();
+        assert!(!paths.colmap.join("database.db").exists());
+        assert_eq!(saved.temporary_png_focal, Some(checkpoint));
     }
 
     #[tokio::test]

@@ -1306,6 +1306,7 @@ pub async fn create_gui_task(
     video_source_identity: Option<String>,
     input_projection: Option<crate::video::panorama::VideoProjection>,
     input_source_identity: Option<String>,
+    image_matching_strategy: Option<crate::project::ImageMatchingStrategy>,
 ) -> std::result::Result<crate::tasks::TaskRecord, crate::tasks::ServiceError> {
     let video_projection = input_projection.or(video_projection);
     let video_source_identity = input_source_identity.or(video_source_identity);
@@ -1332,7 +1333,7 @@ pub async fn create_gui_task(
             planner_enabled.unwrap_or(true),
             "gui",
             None,
-            Some(serde_json::json!({"videoProjection":video_projection.unwrap_or_default(), "videoSourceIdentity":video_source_identity})),
+            Some(serde_json::json!({"videoProjection":video_projection.unwrap_or_default(), "videoSourceIdentity":video_source_identity, "imageMatchingStrategy":image_matching_strategy.unwrap_or_default()})),
         )
         .await
 }

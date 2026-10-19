@@ -649,6 +649,55 @@ async fn fixture() -> (tempfile::TempDir, TaskService, TaskRecord) {
 }
 
 #[tokio::test]
+async fn image_matching_request_survives_restart_and_cannot_change_on_retry() {
+    use crate::project::ImageMatchingStrategy;
+    let (root, service, _) = fixture().await;
+    let images = root.path().join("photos");
+    std::fs::create_dir(&images).unwrap();
+    for strategy in [
+        ImageMatchingStrategy::Sequential,
+        ImageMatchingStrategy::Exhaustive,
+    ] {
+        let parameters = serde_json::json!({"imageMatchingStrategy": strategy});
+        let task = service
+            .create(
+                None,
+                images.clone(),
+                Quality::Balanced,
+                root.path().join("projects"),
+                true,
+                "gui",
+                None,
+                Some(parameters.clone()),
+            )
+            .await
+            .unwrap();
+        let reopened = TaskService::at(root.path().join("registry"));
+        let restored = reopened.get(task.task_id).await.unwrap();
+        assert_eq!(restored.request_parameters, Some(parameters));
+        assert_eq!(
+            restored.input_type,
+            crate::project::ProjectInputType::Images
+        );
+        // The original request wins if transport retries reuse the same workspace ID.
+        let retried = reopened
+            .create(
+                Some(task.task_id),
+                images.clone(),
+                Quality::High,
+                root.path().join("projects"),
+                false,
+                "gui",
+                None,
+                Some(serde_json::json!({"imageMatchingStrategy":"other"})),
+            )
+            .await
+            .unwrap();
+        assert_eq!(retried.request_parameters, restored.request_parameters);
+    }
+}
+
+#[tokio::test]
 async fn changed_video_identity_is_rejected_before_starting_a_run() {
     let (root, service, _) = fixture().await;
     let input = root.path().join("changed.mp4");

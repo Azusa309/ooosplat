@@ -857,6 +857,13 @@ impl TaskService {
                     .unwrap_or_default(),
             )
             .with_workspace_task_id(Some(id))
+            .with_image_matching_strategy(
+                task.request_parameters
+                    .as_ref()
+                    .and_then(|v| v.get("imageMatchingStrategy"))
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default(),
+            )
             .with_input_boundary(
                 (task.source.as_deref() == Some("mcp")).then(|| task.input_path.clone()),
             )

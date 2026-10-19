@@ -278,6 +278,7 @@ pub async fn extract_features(
     manager: &ProcessManager,
     observer: Option<ProcessObserver>,
     gpu_index: Option<u32>,
+    camera_params: Option<&str>,
 ) -> Result<()> {
     let (use_gpu_option, gpu_index_option) = feature_gpu_options(executable, manager).await?;
     run_colmap(
@@ -292,6 +293,7 @@ pub async fn extract_features(
             max_image_size,
             max_features,
             None,
+            camera_params,
         ),
         database.parent().unwrap_or(images),
         log,
@@ -314,6 +316,7 @@ pub async fn extract_features_quality_v2(
     manager: &ProcessManager,
     observer: Option<ProcessObserver>,
     gpu_index: Option<u32>,
+    camera_params: Option<&str>,
 ) -> Result<()> {
     let (use_gpu_option, gpu_index_option) = feature_gpu_options(executable, manager).await?;
     run_colmap(
@@ -328,6 +331,7 @@ pub async fn extract_features_quality_v2(
             Some(max_image_size),
             Some(max_features),
             image_list,
+            camera_params,
         ),
         database.parent().unwrap_or(images),
         log,
@@ -483,6 +487,7 @@ fn feature_extraction_args(
     max_image_size: Option<u32>,
     max_features: Option<u32>,
     image_list: Option<&Path>,
+    camera_params: Option<&str>,
 ) -> Vec<OsString> {
     let mut args = vec![
         "feature_extractor".into(),
@@ -509,6 +514,9 @@ fn feature_extraction_args(
     if let Some(image_list) = image_list {
         args.push("--image_list_path".into());
         args.push(image_list.into());
+    }
+    if let Some(params) = camera_params {
+        args.extend(["--ImageReader.camera_params".into(), params.into()]);
     }
     args
 }
@@ -883,6 +891,7 @@ mod tests {
             Some(2048),
             Some(8192),
             None,
+            None,
         );
         apply_panorama_camera(&mut args, &config);
         let args = strings(args);
@@ -957,6 +966,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         ));
         assert!(extraction
             .windows(2)
@@ -989,6 +999,7 @@ mod tests {
             None,
             "--FeatureExtraction.use_gpu",
             "--FeatureExtraction.gpu_index",
+            None,
             None,
             None,
             None,
@@ -1152,6 +1163,7 @@ mod tests {
             &manager,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1210,6 +1222,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         ));
         assert!(extraction
             .windows(2)
@@ -1231,6 +1244,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         ));
         assert!(extraction
             .windows(2)
@@ -1238,6 +1252,34 @@ mod tests {
         assert!(extraction
             .windows(2)
             .any(|pair| pair == ["--image_path", "../colmap_frames"]));
+    }
+
+    #[test]
+    fn optional_camera_parameters_preserve_explicit_values_masks_gpu_and_limits() {
+        let args = |params| {
+            feature_extraction_args(
+                Path::new("database.db"),
+                Path::new("../colmap_frames"),
+                Some(Path::new("../masks")),
+                Some(0),
+                "--FeatureExtraction.use_gpu",
+                "--FeatureExtraction.gpu_index",
+                Some(1600),
+                Some(8192),
+                Some(Path::new("chosen.txt")),
+                params,
+            )
+        };
+        let original = args(None);
+        assert!(!original
+            .iter()
+            .any(|arg| arg == "--ImageReader.camera_params"));
+        // The builder must not reinterpret or replace an explicit calibration.
+        let explicit = "1234.5,400,300,-0.01";
+        let mut overridden = args(Some(explicit));
+        assert_eq!(overridden.pop().unwrap(), explicit);
+        assert_eq!(overridden.pop().unwrap(), "--ImageReader.camera_params");
+        assert_eq!(overridden, original);
     }
 
     #[test]
@@ -1252,6 +1294,7 @@ mod tests {
             Some(1600),
             Some(4096),
             Some(Path::new("bridge-images.txt")),
+            None,
         ));
         assert!(extraction
             .windows(2)
@@ -1286,6 +1329,7 @@ mod tests {
                 use_gpu_option,
                 gpu_index_option,
                 Some(1200),
+                None,
                 None,
                 None,
             ));

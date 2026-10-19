@@ -7,7 +7,7 @@ const DEFAULT_OCCUPANCY = 0.85;
 const VIEW_TRANSITION_MS = 320;
 const MAX_ORBIT_PITCH = 89.9;
 const ORBIT_POLE_EPSILON = 1e-6;
-const ROAM_VISIBLE_HEIGHT_PER_SECOND = 1;
+const ROAM_VISIBLE_HEIGHT_PER_SECOND = 0.15;
 
 export interface FitViewOptions {
   resetDirection?: boolean;
@@ -556,11 +556,23 @@ export class ViewerControls {
     this.roamLastAt = sampleAt;
     const forward = Number(this.keys.has("KeyW")) - Number(this.keys.has("KeyS"));
     const right = Number(this.keys.has("KeyD")) - Number(this.keys.has("KeyA"));
-    const movement = this.cameraEntity.forward.clone().mulScalar(forward).add(this.cameraEntity.right.clone().mulScalar(right));
+    // Ground-plane navigation follows yaw only: pitch/roll must never change
+    // elevation, reduce horizontal speed, or make movement unstable at a pole.
+    const yaw = this.yaw * Math.PI / 180;
+    const movement = new Vec3(
+      -Math.sin(yaw) * forward + Math.cos(yaw) * right,
+      0,
+      -Math.cos(yaw) * forward - Math.sin(yaw) * right,
+    );
     if (movement.lengthSq() > 0) {
       movement.normalize().mulScalar(ROAM_VISIBLE_HEIGHT_PER_SECOND * this.visibleHeight() * dt * (this.shifted ? 3 : 1));
       this.target.add(movement);
-      this.updateCamera();
+      // A rigid translation does not need lookAt again; at a vertical view its
+      // tiny horizontal direction components can otherwise perturb the roll.
+      const position = this.cameraEntity.getPosition().clone().add(movement);
+      this.cameraEntity.setPosition(position);
+      this.updateClipPlanes(position, this.cameraEntity.forward);
+      this.onMotion?.();
       this.roamMoved = true;
     }
     this.roamFrame = requestAnimationFrame(this.roam);

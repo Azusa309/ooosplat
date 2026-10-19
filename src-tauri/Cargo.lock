@@ -2886,11 +2886,12 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "ooo-splat"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "axum",
  "chrono",
  "clap",
+ "crc32fast",
  "dirs",
  "flate2",
  "getrandom 0.3.4",

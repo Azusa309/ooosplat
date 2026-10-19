@@ -13,8 +13,17 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: mocks.confirm, open: vi.f
 vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: vi.fn() }));
 
 import { probeAndPlan, prepareErrorReport,sendErrorReport,beginGaussianVideoExport,beginGaussianHtmlExport,commitGaussianHtmlExport,cancelGaussianHtmlExport,checkColmapAcceleration, classifyDroppedInput, confirmSmallImageSequence, getAppRuntimeStatus, revealProject, revealProjectLogs } from "./backend";
+import { startPipeline } from './backend';
 
 describe("backend browser guards", () => {
+  it.each(['sequential', 'exhaustive', undefined] as const)('forwards image matching %s before starting exactly one task', async imageMatchingStrategy => {
+    const result = { projectId: 'project' };
+    mocks.invoke.mockResolvedValueOnce({ task_id: 'task' }).mockResolvedValueOnce({ task_id: 'task', run_id: 'run' }).mockResolvedValueOnce({ task_id: 'task', revision: 1, status: 'completed', result });
+    await expect(startPipeline('E:/photos', 'balanced', 'E:/projects', true, 'draft', 'equirectangular', 'identity', imageMatchingStrategy)).resolves.toEqual(result);
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, 'create_gui_task', { path: 'E:/photos', quality: 'balanced', projectsRoot: 'E:/projects', plannerEnabled: true, workspaceTaskId: 'draft', inputProjection: 'equirectangular', inputSourceIdentity: 'identity', imageMatchingStrategy });
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, 'start_gui_task', { taskId: 'task' });
+    expect(mocks.invoke).toHaveBeenCalledTimes(3);
+  });
   it("publishes fast metadata before planning and preserves the legacy replanning interface", async () => {
     const metadata = { inputType: 'video', video: null, imageSequence: null, projectionDetection: { sourceIdentity: 'fresh', confirmedErp: false, requiresChoice: false, supportedErp: false, reason: '', previewJpeg: [] } };
     mocks.invoke.mockResolvedValueOnce(metadata);

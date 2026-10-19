@@ -79,6 +79,7 @@ export interface InputAnalysis {
 }
 export interface PipelineOperation { id: number; attempt: number; }
 export type VideoProjection = "auto" | "perspective" | "equirectangular";
+export type ImageMatchingStrategy = "sequential" | "exhaustive";
 export interface ProjectionDetection { sourceIdentity?: string; unsupported?: boolean; confirmedErp: boolean; requiresChoice: boolean; supportedErp: boolean; reason: string; previewJpeg: number[]; }
 
 export interface ReshootSourceInfo {

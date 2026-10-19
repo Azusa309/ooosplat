@@ -485,17 +485,20 @@ describe("focused perspective WASD flight", () => {
     return { ...state, key, advance, frames, done };
   }
 
-  it("flies along the pitched view, preserves orientation/distance and saves only when released", () => {
+  it("moves horizontally at 15% speed, preserves orientation/distance and saves only when released", () => {
     const s = flight();
     try {
       const before = s.controls.snapshot();
-      const forward = s.entity.forward.clone();
+      const forward = s.entity.forward.clone(); forward.y = 0; forward.normalize();
+      const position = s.entity.getPosition().clone();
       s.key("keydown", "KeyW");
       s.advance(16); s.advance(32);
       const moved = new Vec3(...s.controls.snapshot().target).sub(new Vec3(...before.target));
       expect(moved.clone().normalize().dot(forward)).toBeCloseTo(1);
-      expect(moved.y).toBeLessThan(0);
-      expect(moved.length()).toBeCloseTo(2 * before.distance * Math.tan(52 * Math.PI / 360) * 0.032);
+      expect(moved.y).toBe(0);
+      expect(s.entity.getPosition().y).toBeCloseTo(position.y, 7);
+      expect(s.entity.forward.dot(forward)).toBeCloseTo(Math.cos(before.pitch * Math.PI / 180));
+      expect(moved.length()).toBeCloseTo(0.15 * 2 * before.distance * Math.tan(52 * Math.PI / 360) * 0.032);
       expect(s.controls.snapshot().distance).toBe(before.distance);
       expect(s.onViewChange).not.toHaveBeenCalled();
       s.key("keyup", "KeyW");
@@ -512,7 +515,50 @@ describe("focused perspective WASD flight", () => {
       s.key("keydown", "KeyD", { shiftKey: true });
       s.advance(5000);
       const moved = new Vec3(...s.controls.snapshot().target).sub(new Vec3(...before.target));
-      expect(moved.length()).toBeCloseTo(2 * before.distance * Math.tan(52 * Math.PI / 360) * 0.05 * 3);
+      expect(moved.length()).toBeCloseTo(0.15 * 2 * before.distance * Math.tan(52 * Math.PI / 360) * 0.05 * 3);
+      expect(moved.y).toBe(0);
+    } finally { s.done(); }
+  });
+
+  it.each([
+    [0, 0, 0], [47, 70, 90], [-135, -70, -90],
+    [90, 89.999, 180], [47, 90, 90], [-135, -90, -90],
+  ])("keeps all keys horizontal at full ground speed with yaw %s, pitch %s, roll %s", (yaw, pitch, roll) => {
+    const s = flight();
+    try {
+      const initial = { ...s.controls.snapshot(), yaw, pitch, roll };
+      const angle = yaw * Math.PI / 180;
+      const front = new Vec3(-Math.sin(angle), 0, -Math.cos(angle));
+      const right = new Vec3(Math.cos(angle), 0, -Math.sin(angle));
+      let time = 0;
+      for (const [code, direction] of [
+        ['KeyW', front], ['KeyS', front.clone().mulScalar(-1)],
+        ['KeyD', right], ['KeyA', right.clone().mulScalar(-1)],
+      ] as const) {
+        s.controls.restore(initial);
+        const before = s.entity.getPosition().clone();
+        const orientation = s.entity.getRotation().clone();
+        s.key('keydown', code); s.advance(time += 16); s.key('keyup', code);
+        const moved = new Vec3(...s.controls.snapshot().target).sub(new Vec3(...initial.target));
+        expect(moved.y).toBe(0);
+        expect(moved.clone().normalize().dot(direction)).toBeCloseTo(1, 7);
+        expect(moved.length()).toBeCloseTo(0.15 * 2 * initial.distance * Math.tan(initial.fov! * Math.PI / 360) * 0.016, 7);
+        expect(s.entity.getPosition().y).toBeCloseTo(before.y, 6);
+        expect(s.entity.getRotation().equalsApprox(orientation)).toBe(true);
+      }
+    } finally { s.done(); }
+  });
+
+  it('cancels opposing keys without moving or committing a view change', () => {
+    const s = flight();
+    try {
+      const before = s.controls.snapshot();
+      for (const code of ['KeyW', 'KeyS', 'KeyA', 'KeyD']) s.key('keydown', code);
+      s.advance(16);
+      for (const code of ['KeyW', 'KeyS', 'KeyA', 'KeyD']) s.key('keyup', code);
+      expect(s.controls.snapshot()).toEqual(before);
+      expect(s.onViewChange).not.toHaveBeenCalled();
+      expect(s.frames.size).toBe(0);
     } finally { s.done(); }
   });
 
@@ -541,7 +587,7 @@ describe("focused perspective WASD flight", () => {
       s.key('keydown', 'KeyW');
       for (let frame = 1; frame <= fps; frame++) s.advance(1000 * frame / fps);
       const distance = new Vec3(...s.controls.snapshot().target).sub(new Vec3(...start.target)).length();
-      expect(distance).toBeCloseTo(2 * start.distance * Math.tan(52 * Math.PI / 360), 5);
+      expect(distance).toBeCloseTo(0.15 * 2 * start.distance * Math.tan(52 * Math.PI / 360), 5);
     } finally { s.done(); }
   });
 
@@ -553,7 +599,7 @@ describe("focused perspective WASD flight", () => {
       s.key("keydown", "KeyW");
       s.advance(80); s.advance(90); s.advance(116);
       const distance = new Vec3(...s.controls.snapshot().target).sub(new Vec3(...before.target)).length();
-      expect(distance).toBeCloseTo(2 * before.distance * Math.tan(52 * Math.PI / 360) * 0.016, 7);
+      expect(distance).toBeCloseTo(0.15 * 2 * before.distance * Math.tan(52 * Math.PI / 360) * 0.016, 7);
     } finally { s.done(); }
   });
 
@@ -652,12 +698,13 @@ describe("focused perspective WASD flight", () => {
       if (animate) s.advance(100);
       const before = s.entity.getPosition().clone();
       const zoom = s.controls.snapshot();
-      const forward = s.entity.forward.clone();
+      const forward = s.entity.forward.clone(); forward.y = 0; forward.normalize();
       s.key("keydown", "KeyW");
       s.advance(animate ? 116 : 16);
       const movement = s.entity.getPosition().clone().sub(before);
       expect(movement.clone().normalize().dot(forward)).toBeCloseTo(1, 5);
-      expect(movement.length()).toBeCloseTo(2 * zoom.distance * Math.tan(zoom.fov! * Math.PI / 360) * 0.016, 5);
+      expect(movement.y).toBeCloseTo(0, 7);
+      expect(movement.length()).toBeCloseTo(0.15 * 2 * zoom.distance * Math.tan(zoom.fov! * Math.PI / 360) * 0.016, 5);
       s.key("keyup", "KeyW");
       expect(s.frames.size).toBe(0);
     } finally { button.remove(); s.done(); }
@@ -680,7 +727,7 @@ describe("focused perspective WASD flight", () => {
       expect(located.fov).toBe(70);
       expect(document.activeElement).toBe(s.canvas);
       s.key("keydown", "KeyW"); s.advance(416); s.key("keyup", "KeyW");
-      expect(s.entity.getPosition().distance(reference.position)).toBeGreaterThan(0.01);
+      expect(s.entity.getPosition().distance(reference.position)).toBeCloseTo(0.15 * 2 * located.distance * Math.tan(located.fov! * Math.PI / 360) * 0.016, 5);
       s.controls.alignOrthographic(view, bounds, 0.85, false);
       s.controls.restore(located);
       expect(s.entity.getPosition().distance(reference.position)).toBeLessThan(1e-5);

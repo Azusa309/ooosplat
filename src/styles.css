@@ -418,6 +418,8 @@ h1, h2 { margin: 0; font: 650 29px/1 "Bahnschrift", "Microsoft YaHei UI", sans-s
 .preflight-dialog header button { padding: 8px; color: var(--muted); border: 0; background: transparent; cursor: pointer; }
 .preflight-body { padding: 20px 22px; overflow-y: auto; font-size: 13px; line-height: 1.7; }
 .preflight-source { display: block; overflow-wrap: anywhere; }
+.preflight-body > p { white-space: pre-line; }
+.preflight-choices { display: grid; gap: 8px; }
 .preflight-accept { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--line-dark); cursor: pointer; }
 .preflight-accept input { accent-color: var(--blue); flex-shrink: 0; }
 .preflight-dialog footer { border-top: 1px solid var(--line); flex-wrap: wrap; }

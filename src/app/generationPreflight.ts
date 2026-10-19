@@ -1,7 +1,7 @@
 import type { TaskDraft } from './taskWorkspace';
-import type { VideoProjection } from '../types/pipeline';
+import type { ImageMatchingStrategy, VideoProjection } from '../types/pipeline';
 
-export type PreflightKind = 'smallImages' | 'largeImages';
+export type PreflightKind = 'smallImages' | 'imageOrder';
 export interface PreflightQuestion { id: string; kind: PreflightKind; draft: TaskDraft; snapshot: string }
 export type PreflightAnswers = Record<string, string>;
 export const projectionIdentity = (draft: TaskDraft) => draft.projectionDetection?.sourceIdentity || draft.inputPath || '';
@@ -16,11 +16,16 @@ export function resolvedProjection(draft: TaskDraft): VideoProjection {
 // Ordered registry: add another check without coupling rendering to task startup.
 const checks: Array<{ kind: PreflightKind; applies: (draft: TaskDraft) => boolean }> = [
   { kind: 'smallImages', applies: d => d.inputType === 'images' && !!d.imageSequence && d.imageSequence.imageCount < 30 },
-  { kind: 'largeImages', applies: d => d.inputType === 'images' && !!d.imageSequence?.requiresLargeSequenceConfirmation },
+  { kind: 'imageOrder', applies: d => d.inputType === 'images' && (d.imageSequence?.imageCount ?? 0) > 100 },
 ];
 export function collectPreflightQuestions(drafts: TaskDraft[]): PreflightQuestion[] {
-  return drafts.filter(d => !d.running && !!d.inputPath).flatMap(draft => checks
+  return drafts.filter(d => d.kind === 'generation' && !d.running && !!d.inputPath).flatMap(draft => checks
     .filter(check => check.applies(draft))
     .map(check => ({ id: `${draft.id}:${check.kind}`, kind: check.kind, draft, snapshot: preflightSnapshot(draft) })));
 }
-export function answerIsValid(_question: PreflightQuestion, answer?: string) { return answer === 'accepted'; }
+export function answerIsValid(question: PreflightQuestion, answer?: string) {
+  return question.kind === 'imageOrder' ? answer === 'sequential' || answer === 'exhaustive' : answer === 'accepted';
+}
+export function imageMatchingStrategy(draft: TaskDraft, answers: PreflightAnswers): ImageMatchingStrategy {
+  return draft.inputType === 'images' && (draft.imageSequence?.imageCount ?? 0) > 100 && answers[`${draft.id}:imageOrder`] === 'sequential' ? 'sequential' : 'exhaustive';
+}

@@ -22,6 +22,14 @@ pub enum ProjectInputType {
     Images,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageMatchingStrategy {
+    Sequential,
+    #[default]
+    Exhaustive,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GaussianTransform {
@@ -383,6 +391,12 @@ impl From<&FramePlan> for FrameState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineStateFile {
+    /// Frozen at creation. Legacy image projects retain exhaustive matching.
+    #[serde(default)]
+    pub image_matching_strategy: ImageMatchingStrategy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) temporary_png_focal:
+        Option<crate::video::temporary_png_focal_workaround::Checkpoint>,
     #[serde(default = "legacy_video_projection")]
     pub video_projection: crate::video::panorama::VideoProjection,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -454,6 +468,8 @@ impl PipelineStateFile {
     pub fn created_for(preset: Quality, input_type: ProjectInputType) -> Self {
         Self {
             // Older projects were always perspective. Never reinterpret their caches.
+            temporary_png_focal: None,
+            image_matching_strategy: ImageMatchingStrategy::default(),
             video_projection: crate::video::panorama::VideoProjection::Perspective,
             panorama: None,
             configuration: None,
@@ -480,6 +496,31 @@ impl PipelineStateFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn image_matching_strategy_is_frozen_and_legacy_defaults_to_exhaustive() {
+        let mut state = PipelineStateFile::created_for(Quality::Balanced, ProjectInputType::Images);
+        state.image_matching_strategy = ImageMatchingStrategy::Sequential;
+        state.matching_complete = true;
+        let mut json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["imageMatchingStrategy"], "sequential");
+        let restored: PipelineStateFile = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            restored.image_matching_strategy,
+            ImageMatchingStrategy::Sequential
+        );
+        assert!(restored.matching_complete);
+        json.as_object_mut()
+            .unwrap()
+            .remove("imageMatchingStrategy");
+        let legacy: PipelineStateFile = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            legacy.image_matching_strategy,
+            ImageMatchingStrategy::Exhaustive
+        );
+        json["imageMatchingStrategy"] = serde_json::json!("other");
+        assert!(serde_json::from_value::<PipelineStateFile>(json).is_err());
+    }
+
     #[test]
     fn state_uses_frame_strategy_vocabulary_only() {
         let json = serde_json::to_string(&PipelineStateFile::created(Quality::Balanced)).unwrap();

@@ -119,8 +119,8 @@ export async function onInputDragDrop(handler: (event: NativeInputDragEvent) => 
     });
   });
 }
-export async function startPipeline(path: string, quality: Quality, projectsRoot: string, plannerEnabled = true, workspaceTaskId?: string, videoProjection?: import("../types/pipeline").VideoProjection, videoSourceIdentity?: string): Promise<PipelineResult> {
-  const task = await invoke<SharedTask>("create_gui_task", { path, quality, projectsRoot, plannerEnabled, workspaceTaskId, inputProjection: videoProjection, inputSourceIdentity: videoSourceIdentity });
+export async function startPipeline(path: string, quality: Quality, projectsRoot: string, plannerEnabled = true, workspaceTaskId?: string, videoProjection?: import("../types/pipeline").VideoProjection, videoSourceIdentity?: string, imageMatchingStrategy?: import("../types/pipeline").ImageMatchingStrategy): Promise<PipelineResult> {
+  const task = await invoke<SharedTask>("create_gui_task", { path, quality, projectsRoot, plannerEnabled, workspaceTaskId, inputProjection: videoProjection, inputSourceIdentity: videoSourceIdentity, imageMatchingStrategy });
   await startGuiTask(task.task_id);
   return waitForSharedTask(task.task_id);
 }

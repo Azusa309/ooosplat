@@ -20,13 +20,16 @@ it('requires every answer, supports back navigation and submits all answers once
   await act(async () => container.querySelector<HTMLInputElement>('input')!.click());
   await act(async () => button().click());
   expect(container.textContent).toContain('2/2'); expect(button().disabled).toBe(true);
+  expect(container.textContent).toContain('确认图片顺序');
+  expect(container.querySelectorAll('input[type="radio"]')).toHaveLength(2);
+  expect(container.querySelector('input:checked')).toBeNull();
   await act(async () => Array.from(container.querySelectorAll('button')).find(node => node.textContent === '上一步')!.click());
   expect(container.querySelector<HTMLInputElement>('input')!.checked).toBe(true);
   await act(async () => button().click());
   await act(async () => container.querySelector<HTMLInputElement>('input')!.click());
   await act(async () => { button().click(); button().click(); });
   expect(finish).toHaveBeenCalledTimes(1);
-  expect(finish.mock.calls[0][0]).toEqual({ [`${draft.id}:smallImages`]: 'accepted', 'second:largeImages': 'accepted' });
+  expect(finish.mock.calls[0][0]).toEqual({ [`${draft.id}:smallImages`]: 'accepted', 'second:imageOrder': 'sequential' });
 });
 it('Esc cancels without submitting any partial answer and traps keyboard focus', async () => {
   await render();
@@ -40,4 +43,22 @@ it('Esc cancels without submitting any partial answer and traps keyboard focus',
   cancel.focus();
   await act(async () => cancel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
   expect(finish).toHaveBeenCalledWith(null);
+});
+it('switches mutually exclusive choices, retains them across navigation, and uses approved English copy', async () => {
+  localStorage.setItem('ooo-splat-language', 'en');
+  await render();
+  await act(async () => container.querySelector<HTMLInputElement>('input')!.click());
+  await act(async () => button().click());
+  expect(container.querySelector('h2')?.textContent).toBe('Confirm image order');
+  expect(container.querySelector('#preflight-description')?.textContent).toContain('This folder contains 600 images. Are they arranged in capture order?');
+  const ordered = container.querySelector<HTMLInputElement>('input[value="sequential"]')!;
+  const unordered = container.querySelector<HTMLInputElement>('input[value="exhaustive"]')!;
+  await act(async () => ordered.click());
+  await act(async () => unordered.click());
+  expect(unordered.checked).toBe(true); expect(ordered.checked).toBe(false);
+  await act(async () => container.querySelector<HTMLButtonElement>('footer > div > .secondary-action')!.click());
+  await act(async () => button().click());
+  expect(container.querySelector<HTMLInputElement>('input[value="exhaustive"]')!.checked).toBe(true);
+  await act(async () => button().click());
+  expect(finish.mock.calls[0][0]['second:imageOrder']).toBe('exhaustive');
 });
