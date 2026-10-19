@@ -33,7 +33,7 @@ Main development version: **0.6.1**. Latest published release: **0.5.0**. The cu
 | P1 | Video capture guidance UI | Provide guidance on orbit paths, movement speed, overlap, lighting, and common capture problems before generation begins. | To be created |
 | P1 | Automatic update notifications | Detect new releases and present version information, release notes, and trusted download links. | To be created |
 | P2 | Mesh export | Convert reconstruction results to common Mesh formats with documented texture, coordinate-system, and quality options. | To be created |
-| P3 | Panoramic video support | Explore a workflow for using panoramic video as input and producing usable Gaussian Splatting results. | To be created |
+| P3 | Panorama expansion and acceptance | `feat/panorama-video-v1` implements full mono ERP sphere SfM and six-face training. Native-brand MP4, long inputs, platform and quality acceptance remain; more projections and panorama reshoots are future work. See [v1 notes](docs/PANORAMA_VIDEO_V1.md#english-summary). | Branch acceptance |
 
 ## Completed
 

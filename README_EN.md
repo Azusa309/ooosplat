@@ -61,6 +61,12 @@ https://github.com/user-attachments/assets/5b9e8cef-4c71-4bfa-ba23-641fcdd37659
 - **Local processing**: COLMAP reconstruction and Brush training run on the user's computer, using GPU acceleration when available.
 - **Cross-platform and bilingual**: Supports Windows, Apple Silicon macOS, and Ubuntu, with Simplified Chinese and English interfaces.
 
+The panorama development branch automatically detects standard full monoscopic ERP MP4. Detection status is integrated into the media picker; ambiguous video requires an inline type choice before generation or automatic execution can be enabled, without a video-type dialog. Choices are saved locally per draft and source identity; historical details show the processing type recorded by the task. Progress distinguishes panorama frames, six-face training images and real training iterations. See [Panorama support](docs/PANORAMA_VIDEO_V1.md).
+
+The panorama branch also accepts folders of at least two same-sized JPG/JPEG/PNG panoramas: stitched, monoscopic, full 360°×180°, 2:1 ERP. Images use exhaustive matching without assuming capture order. Incomplete metadata requires an inline ordinary/panorama image choice. Source images stay unchanged; only registered images produce six-face training caches, without multiplying training iterations by six. Panorama reshoots are not supported yet. Detection reads image headers and video metadata only, without pixel decoding, preview generation or full-file hashing; quality changes reuse the detection. See [Panorama image support and validation limits](docs/PANORAMA_IMAGES_V1.md).
+
+Panoramas use dedicated recipes: with Auto Optimize off, Fast / Balanced / High cap splats at 1 / 2 / 3 million. With it on, quality and VRAM budgets determine the cap, up to 10 million. Iterations remain 12,000 / 30,000 / 45,000; caps guarantee neither final counts nor sufficient memory. Ordinary inputs are unchanged. See [panorama training parameters and measurements](docs/PANORAMA_IMAGES_V1.md#全景训练配方-v1).
+
 ### Gaussian Editing Shortcuts
 
 - In Rectangle Select, drag with the left mouse button to replace the selection, use `Shift + drag` to add, and `Ctrl + drag` to remove. Use the middle mouse button to orbit, the right mouse button to pan, and the wheel to zoom.
@@ -139,6 +145,8 @@ sudo apt install ./OOOSplat-0.6.1-x64-linux.deb
 The `.deb` installs only FFmpeg/FFprobe through Ubuntu's package manager; pinned COLMAP and Brush runtimes are included.
 
 ## Installation and Use
+
+The development branch adds [panorama video v1](docs/PANORAMA_VIDEO_V1.md#english-summary): standard, stitched, monoscopic, full 360°×180° ERP MP4. A 2:1 ratio alone requires an explicit ordinary-video/full-panorama choice after inspecting the preview. Dual-fisheye, stereo, VR180 and private camera originals are unsupported. SfM stays spherical; registered panoramas become six-face training caches afterward. Panorama reshoots are not supported in v1.
 
 Sample media: [Download from Quark Drive](https://pan.quark.cn/s/1dde892a1324) to test or try the generation workflow.
 
@@ -447,6 +455,8 @@ Each project keeps source copies, input images, COLMAP data, and Brush intermedi
 ### Can I view final.ply directly in OOOSplat?
 
 Yes. Select “Preview” on a completed project in the task list to open its `.ply` in the dedicated preview workspace. “Adjust” supports whole-model Transform plus rectangle, sphere, and box Gaussian selection, with non-destructive deletion, cropping, inversion, undo, and redo. Edits are saved automatically in the project; “Save edits” confirms that the current edits and view have been saved without creating a model file. Choosing a model format directly from “Export” creates or safely replaces the edited model, while the original `final.ply` remains unchanged. Reopening restores the edits and the view saved on this device; yellow selections and undo history do not persist between sessions. “Animation” adds a 5-second reveal, an 8-second shockwave, a continuous orbit, watermarked portrait/landscape MP4 export, and offline HTML export. External standard/compressed PLY, SOG, SPZ, SPLAT, and KSPLAT files can be imported from “Completed → Import”; LCC/LCC2, Streamed SOG, 2DGS, and ordinary point-cloud PLY files are not supported.
+
+The development branch adds WASD flight after clicking the canvas or “Auto locate view”: W/S move along the view, A/D move sideways, speed is one current visible height per second and follows zoom, and Shift gives 3× speed; perspective only. The upper-right hints explain these controls. “Auto locate view” always restores the first training image's perspective camera, or the earliest registered panorama's front face. It also leaves fixed orthographic views and restores that camera's position, orientation and field of view, rather than only centering the origin and changing zoom. Missing cameras and imported models without verified coordinate alignment disable this button. Opening a preview still restores the previously saved view first. See [verification and limitations](docs/PREVIEW_NAVIGATION.md).
 
 ### Can I preview very large PLY files?
 
