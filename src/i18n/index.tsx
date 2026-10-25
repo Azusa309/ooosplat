@@ -4,6 +4,21 @@ export type Locale = "zh-CN" | "en";
 export type TranslationParams = Record<string, string | number>;
 
 const zhCN = {
+  "reshoot.conditionTitle": "原模型目前是什么情况？",
+  "reshoot.condition.good": "整体正常，只想补充细节",
+  "reshoot.condition.appearance": "整体结构正常，但生成效果不满意",
+  "reshoot.condition.geometry": "明显变形或位置错乱",
+  "reshoot.condition.unsure": "不确定",
+  "reshoot.planTitle": "补拍方案",
+  "reshoot.planWarm": "增量重建＋原模型优化",
+  "reshoot.planCold": "增量重建＋重新训练",
+  "reshoot.planFull": "全量重建＋重新训练",
+  "reshoot.allowFallback": "允许失败后自动改用更耗时的方案",
+  "reshoot.fallbackHint": "可能重新重建场景或重新训练模型，耗时可能明显增加。",
+  "reshoot.multiCameraHint": "支持不同分辨率、宽高比及设备或镜头，请确保新旧素材属于同一场景并有足够重叠。",
+  "reshoot.panoramaHint": "全景项目仅支持完整全景视频或全景图片补拍，暂不支持普通素材。",
+  "reshoot.warmEdits": "本次使用原始生成模型，不继承预览中的删除或裁切；原项目及编辑结果保持不变。",
+  "reshoot.fallbackRunning": "当前方案未能完成，正在自动改用更耗时的方案。",
   "export.model": "导出模型",
   "export.compactSizeHint": "SOG、SPZ 通常更小，实际大小取决于模型；压缩可能影响细节。",
   "export.spzRange": "模型包含超出当前 SPZ 编码器约 ±2048 场景单位范围的坐标。为避免坐标溢出，已停止导出；请选择标准 PLY、压缩 PLY 或 SOG。不会自动缩放或删点。",
@@ -788,6 +803,21 @@ const zhCN = {
 export type TranslationKey = keyof typeof zhCN;
 
 const en: Record<TranslationKey, string> = {
+  "reshoot.conditionTitle": "What is the current model like?",
+  "reshoot.condition.good": "Generally good; I only want to add detail",
+  "reshoot.condition.appearance": "The overall structure is correct, but the generated result is unsatisfactory",
+  "reshoot.condition.geometry": "Clearly distorted or incorrectly positioned",
+  "reshoot.condition.unsure": "Not sure",
+  "reshoot.planTitle": "Reshoot plan",
+  "reshoot.planWarm": "Incremental reconstruction + refinement of the original model",
+  "reshoot.planCold": "Incremental reconstruction + retraining",
+  "reshoot.planFull": "Full reconstruction + retraining",
+  "reshoot.allowFallback": "Allow a slower fallback if the initial approach fails",
+  "reshoot.fallbackHint": "The scene may be reconstructed again or the model retrained, which can take considerably longer.",
+  "reshoot.multiCameraHint": "Different resolutions, aspect ratios, devices, and lenses are supported. Keep the new and original inputs in the same scene with sufficient overlap.",
+  "reshoot.panoramaHint": "Panorama projects only accept full panorama videos or images for reshoots. Ordinary inputs are not supported yet.",
+  "reshoot.warmEdits": "This uses the originally generated model, without preview deletions or cropping. The original project and its edits remain unchanged.",
+  "reshoot.fallbackRunning": "The current approach could not complete. Automatically switching to a slower approach.",
   "export.model": "Export model",
   "export.compactSizeHint": "SOG and SPZ are usually smaller. Actual size depends on the model; compression may affect detail.",
   "export.spzRange": "Some coordinates exceed the current SPZ encoder's range of about ±2048 scene units. Export was stopped to prevent overflow. Choose standard PLY, compressed PLY, or SOG; the model is not automatically rescaled or filtered.",
@@ -1301,7 +1331,7 @@ const exactPipelineEnglish: Record<string, string> = {
 
 export function localizePipelineMessage(locale: Locale, message: string): string {
   if (locale === "zh-CN") return message;
-  for (const key of ['source.unsupportedImages','source.panoramaImagesBudget','source.panoramaReshoot','source.ambiguousImages'] as const) {
+  for (const key of ['source.unsupportedImages','source.panoramaImagesBudget','source.panoramaReshoot','source.ambiguousImages','reshoot.fallbackRunning','reshoot.multiCameraHint','reshoot.panoramaHint'] as const) {
     if (message === zhCN[key]) return en[key];
   }
   const exact = exactPipelineEnglish[message];

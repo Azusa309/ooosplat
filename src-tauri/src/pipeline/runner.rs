@@ -12,6 +12,9 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 
+#[path = "reshoot_runner.rs"]
+mod reshoot_runner;
+
 use crate::{
     engines::{
         brush, colmap,
@@ -104,6 +107,9 @@ pub struct PipelineResult {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReshootSourceInfo {
+    pub source_identity: String,
+    pub projection: crate::video::panorama::VideoProjection,
+    pub warm_available: bool,
     pub project_id: String,
     pub project_name: String,
     pub quality: Quality,
@@ -128,6 +134,12 @@ pub enum ReshootInputType {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReshootInputInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_identity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projection_detection: Option<crate::video::panorama::ProjectionDetection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_sequence: Option<ImageSequenceInfo>,
     pub input_type: ReshootInputType,
     pub image_count: Option<u64>,
     pub duration: Option<f64>,
@@ -485,6 +497,7 @@ pub enum RunnerUpdate {
 }
 
 pub struct PipelineRunner {
+    reshoot_options: Option<crate::pipeline::reshoot::ReshootOptions>,
     image_matching_strategy: crate::project::ImageMatchingStrategy,
     video_projection: crate::video::panorama::VideoProjection,
     lifecycle: Option<Arc<dyn Fn(RunnerUpdate) + Send + Sync>>,
@@ -534,6 +547,7 @@ impl PipelineRunner {
         emit: impl Fn(PipelineEvent) + Send + Sync + 'static,
     ) -> Self {
         Self {
+            reshoot_options: None,
             video_projection: crate::video::panorama::VideoProjection::Auto,
             image_matching_strategy: crate::project::ImageMatchingStrategy::default(),
             engines,
@@ -563,6 +577,14 @@ impl PipelineRunner {
 
     pub fn with_input_boundary(mut self, path: Option<PathBuf>) -> Self {
         self.input_boundary = path;
+        self
+    }
+
+    pub fn with_reshoot_options(
+        mut self,
+        options: Option<crate::pipeline::reshoot::ReshootOptions>,
+    ) -> Self {
+        self.reshoot_options = options;
         self
     }
 
@@ -1330,6 +1352,9 @@ impl PipelineRunner {
     ) -> Result<ReshootSourceInfo> {
         let (project, metadata) = catalog::load_registered_project(project_id).await?;
         let mut info = ReshootSourceInfo {
+            source_identity: String::new(),
+            projection: crate::video::panorama::VideoProjection::Perspective,
+            warm_available: false,
             project_id: project_id.to_string(),
             project_name: metadata.name.clone(),
             quality: metadata.quality,
@@ -1548,6 +1573,9 @@ impl PipelineRunner {
             };
         let compatible = u64::from(width) == source.width && u64::from(height) == source.height;
         Ok(ReshootInputInfo {
+            source_identity: None,
+            projection_detection: None,
+            image_sequence: None,
             input_type,
             image_count,
             duration,
@@ -1575,6 +1603,18 @@ impl PipelineRunner {
         projects_root: &Path,
         requested_quality: Quality,
     ) -> Result<PipelineResult> {
+        if let Some(options) = &self.reshoot_options {
+            return self
+                .generate_reshoot_v2(
+                    source_project_id,
+                    reshoot_input,
+                    input_type,
+                    projects_root,
+                    requested_quality,
+                    options.clone(),
+                )
+                .await;
+        }
         let source = self.inspect_reshoot_source(source_project_id).await?;
         if !source.eligible {
             return Err(SplatError::Process(
@@ -1813,6 +1853,16 @@ impl PipelineRunner {
         mut state: PipelineStateFile,
         acceleration: &crate::engines::ColmapAccelerationStatus,
     ) -> Result<PipelineResult> {
+        if state
+            .reshoot
+            .as_ref()
+            .and_then(|r| r.recipe.as_ref())
+            .is_some()
+        {
+            return self
+                .run_reshoot_v2(project_manager, paths, metadata, state, acceleration)
+                .await;
+        }
         let provenance = metadata
             .reshoot
             .clone()
@@ -3454,6 +3504,16 @@ impl PipelineRunner {
         _estimated_duration_ms: u64,
     ) -> Result<PathBuf> {
         self.log_brush_profile("BrushProfile", &resolved, EventLevel::Info);
+        let warm = state
+            .reshoot
+            .as_ref()
+            .and_then(|r| r.recipe.as_ref())
+            .and_then(|r| r.warm_parameters);
+        let alpha_mode = state
+            .reshoot
+            .as_ref()
+            .and_then(|r| r.recipe.as_ref())
+            .map(|_| "transparent");
         let gpu_launch_policy = brush::BrushGpuLaunchPolicy::from_acceleration(acceleration);
         self.events.send(
             PipelineStage::TrainingSplats,
@@ -3477,6 +3537,8 @@ impl PipelineRunner {
             dataset,
             &paths.brush,
             brush::BrushTrainingOptions {
+                alpha_mode,
+                warm,
                 preset: resolved.preset,
                 panorama: resolved.panorama.is_some(),
                 log_path: first_log,
@@ -3500,7 +3562,7 @@ impl PipelineRunner {
                     && state.planner_enabled
                     && !state.brush_training.oom_retry_used =>
             {
-                let Some(downgraded) = brush_oom_fallback(
+                let Some(mut downgraded) = brush_oom_fallback(
                     quality,
                     state.planner_enabled,
                     state.brush_training.oom_retry_used,
@@ -3509,6 +3571,17 @@ impl PipelineRunner {
                 ) else {
                     return Err(error);
                 };
+                if warm.is_some() {
+                    downgraded.preset.total_steps = resolved.preset.total_steps;
+                    downgraded.preset.densification = resolved.preset.densification;
+                    downgraded.preset.max_splats = Some(
+                        downgraded
+                            .preset
+                            .max_splats
+                            .unwrap_or(10_000_000)
+                            .max(initial_sfm_points.min(u32::MAX as u64) as u32),
+                    );
+                }
                 state.brush_training.oom_retry_used = true;
                 state.brush_training.resolved = Some(downgraded);
                 if let Some(tracker) = &self.effectiveness {
@@ -3537,6 +3610,8 @@ impl PipelineRunner {
                     dataset,
                     &paths.brush,
                     brush::BrushTrainingOptions {
+                        alpha_mode,
+                        warm,
                         preset: downgraded.preset,
                         panorama: downgraded.panorama.is_some(),
                         log_path: paths.logs.join("brush-retry.log"),

@@ -235,6 +235,7 @@ pub struct ProjectTaskLogLine {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectTaskDetail {
+    reshoot_recipe: Option<crate::pipeline::reshoot::ReshootRecipe>,
     project: ProjectSummary,
     input_type: Option<ProjectInputType>,
     video_projection: Option<crate::video::panorama::VideoProjection>,
@@ -1072,6 +1073,10 @@ pub async fn get_project_task_detail(
         .as_ref()
         .map(|output| output.registered_images);
     Ok(ProjectTaskDetail {
+        reshoot_recipe: state
+            .as_ref()
+            .and_then(|s| s.reshoot.as_ref())
+            .and_then(|r| r.recipe.clone()),
         project,
         input_type: (!is_imported).then_some(metadata.input_type),
         video_projection: project_video_projection(state.as_ref(), metadata.input_type),
@@ -2974,6 +2979,8 @@ mod tests {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IncrementalReshootRequest {
+    #[serde(default)]
+    reshoot_options: Option<crate::pipeline::reshoot::ReshootOptions>,
     source_project_id: String,
     reshoot_path: String,
     input_type: ReshootInputType,
@@ -2987,9 +2994,15 @@ pub struct IncrementalReshootRequest {
 pub async fn inspect_reshoot_source(
     app: tauri::AppHandle,
     project_id: String,
+    recipe_version: Option<u32>,
 ) -> std::result::Result<ReshootSourceInfo, SplatError> {
     let project_id =
         Uuid::parse_str(&project_id).map_err(|_| SplatError::Process("原项目 ID 无效".into()))?;
+    if recipe_version == Some(2) {
+        return PipelineRunner::new(paths_for_app(&app), |_| {})
+            .inspect_reshoot_source_v2(project_id)
+            .await;
+    }
     PipelineRunner::new(paths_for_app(&app), |_| {})
         .inspect_reshoot_source(project_id)
         .await
@@ -3001,9 +3014,26 @@ pub async fn probe_reshoot_input(
     project_id: String,
     path: String,
     input_type: ReshootInputType,
+    recipe_version: Option<u32>,
+    quality: Option<Quality>,
+    planner_enabled: Option<bool>,
 ) -> std::result::Result<ReshootInputInfo, SplatError> {
     let project_id =
         Uuid::parse_str(&project_id).map_err(|_| SplatError::Process("原项目 ID 无效".into()))?;
+    if recipe_version == Some(2) {
+        return PipelineRunner::new_with_planner(
+            paths_for_app(&app),
+            planner_enabled.unwrap_or(true),
+            |_| {},
+        )
+        .probe_reshoot_input_v2(
+            project_id,
+            Path::new(&path),
+            input_type,
+            quality.unwrap_or(Quality::Balanced),
+        )
+        .await;
+    }
     PipelineRunner::new(paths_for_app(&app), |_| {})
         .probe_reshoot_input(project_id, Path::new(&path), input_type)
         .await
@@ -3037,16 +3067,27 @@ pub async fn start_gui_reshoot(
     let checkpoint: PipelineStateFile =
         serde_json::from_slice(&tokio::fs::read(project.join("state.json")).await?)?;
     let imported = metadata.imported.is_some();
-    let quality = if imported {
+    let quality = if imported || request.reshoot_options.is_some() {
         request.quality.unwrap_or(Quality::Balanced)
     } else {
         metadata.quality
     };
-    let planner_enabled = if imported {
+    let planner_enabled = if imported || request.reshoot_options.is_some() {
         request.planner_enabled.unwrap_or(true)
     } else {
         checkpoint.planner_enabled
     };
+    if let Some(options) = &request.reshoot_options {
+        PipelineRunner::new_with_planner(paths_for_app(&app), planner_enabled, |_| {})
+            .validate_reshoot_request_v2(
+                source,
+                Path::new(&request.reshoot_path),
+                request.input_type,
+                quality,
+                options,
+            )
+            .await?;
+    }
     let id = request
         .workspace_task_id
         .map(|v| Uuid::parse_str(&v))
@@ -3061,7 +3102,9 @@ pub async fn start_gui_reshoot(
             planner_enabled,
             "gui",
             None,
-            None,
+            request
+                .reshoot_options
+                .map(|options| serde_json::json!({"reshootOptions":options})),
         )
         .await?;
     state.mark_reshoot(task.task_id, source).await?;

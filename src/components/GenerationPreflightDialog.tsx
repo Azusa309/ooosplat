@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { useI18n } from '../i18n';
-import { answerIsValid, type PreflightAnswers, type PreflightQuestion } from '../app/generationPreflight';
+import { answerIsValid, reshootPlanKey, type PreflightAnswers, type PreflightQuestion } from '../app/generationPreflight';
 
 export interface PreflightSession { questions: PreflightQuestion[]; finalLabel: string; resolve: (answers: PreflightAnswers | null) => void }
 export function GenerationPreflightDialog({ session, onFinish }: { session: PreflightSession; onFinish: (answers: PreflightAnswers | null) => void }) {
@@ -18,6 +18,11 @@ export function GenerationPreflightDialog({ session, onFinish }: { session: Pref
     return () => { if (previous?.isConnected) previous.focus(); };
   }, []);
   const last = index === session.questions.length - 1;
+  const summary = question.kind === 'reshootSummary';
+  const condition = question.kind === 'reshootCondition';
+  const titleKey = summary ? 'reshoot.planTitle' : condition ? 'reshoot.conditionTitle' : question.kind === 'smallImages' ? 'dialog.smallSequenceTitle' : 'preflight.imageOrderTitle';
+  const currentValid = answerIsValid(question, summary ? answers[question.id] ?? 'accepted' : answers[question.id]);
+  const complete = session.questions.every(item => answerIsValid(item, item.kind === 'reshootSummary' ? answers[item.id] ?? 'accepted' : answers[item.id]));
   return <div className="preflight-backdrop" onKeyDown={event => {
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(null); }
     if (event.key === 'Tab') {
@@ -28,16 +33,24 @@ export function GenerationPreflightDialog({ session, onFinish }: { session: Pref
     }
   }}>
     <section ref={root} tabIndex={-1} className="preflight-dialog" role="dialog" aria-modal="true" aria-labelledby="preflight-title" aria-describedby="preflight-description">
-      <header><div><small>{t('preflight.step', { current: index + 1, total: session.questions.length })}</small><h2 id="preflight-title">{t(question.kind === 'smallImages' ? 'dialog.smallSequenceTitle' : 'preflight.imageOrderTitle')}</h2></div><button type="button" aria-label={t('common.close')} onClick={() => finish(null)}><X size={18} /></button></header>
+      <header><div><small>{t('preflight.step', { current: index + 1, total: session.questions.length })}</small><h2 id="preflight-title">{t(titleKey)}</h2></div><button type="button" aria-label={t('common.close')} onClick={() => finish(null)}><X size={18} /></button></header>
       <div className="preflight-body" key={question.id}>
         <strong className="preflight-source">{question.draft.inputPath?.split(/[\\/]/).at(-1)}</strong>
-          <p id="preflight-description">{t(question.kind === 'smallImages' ? 'dialog.smallSequence' : 'preflight.imageOrderDescription', { count: question.draft.imageSequence?.imageCount ?? 0 })}</p>
+          <p id="preflight-description">{summary ? t(reshootPlanKey(question.draft, answers)) : condition ? t('reshoot.conditionTitle') : t(question.kind === 'smallImages' ? 'dialog.smallSequence' : 'preflight.imageOrderDescription', { count: question.draft.reshootPlan?.imageCount ?? question.draft.imageSequence?.imageCount ?? 0 })}</p>
+          {condition && <div className="preflight-choices" role="radiogroup" aria-labelledby="preflight-title">{(['good','appearance','geometry','unsure'] as const).map(value => <label key={value} className="preflight-accept"><input type="radio" name={question.id} value={value} checked={answers[question.id] === value} onChange={() => setAnswers(current => ({...current,[question.id]:value}))} />{t(`reshoot.condition.${value}`)}</label>)}</div>}
+          {summary && <>
+            <p>{t(`quality.${question.draft.quality}`)}</p>
+            <label className="preflight-accept"><input type="checkbox" checked={question.draft.plannerEnabled} disabled />{t('planner.label')}</label>
+            {reshootPlanKey(question.draft,answers) === 'reshoot.planWarm' && <p>{t('reshoot.warmEdits')}</p>}
+            <label className="preflight-accept"><input type="checkbox" checked={answers[question.id] === 'fallback'} onChange={event => setAnswers(current => ({...current,[question.id]:event.target.checked ? 'fallback' : 'accepted'}))} />{t('reshoot.allowFallback')}</label>
+            <p className="field-note">{t('reshoot.fallbackHint')}</p>
+          </>}
           {question.kind === 'smallImages' && <p className="field-note">{t('captureAdvice.overlap')} {t('captureAdvice.coverage')} {t('captureAdvice.consistency')} {t('captureAdvice.aiWarning')}</p>}
           {question.kind === 'imageOrder' ? <div className="preflight-choices" role="radiogroup" aria-labelledby="preflight-title">
             {(['sequential', 'exhaustive'] as const).map(strategy => <label className="preflight-accept" key={strategy}><input type="radio" name={question.id} value={strategy} checked={answers[question.id] === strategy} onChange={() => setAnswers(current => ({ ...current, [question.id]: strategy }))} />{t(strategy === 'sequential' ? 'preflight.ordered' : 'preflight.unordered')}</label>)}
-          </div> : <label className="preflight-accept"><input type="checkbox" checked={answers[question.id] === 'accepted'} onChange={event => setAnswers(current => ({ ...current, [question.id]: event.target.checked ? 'accepted' : '' }))} />{t('preflight.acceptWarning')}</label>}
+          </div> : question.kind === 'smallImages' ? <label className="preflight-accept"><input type="checkbox" checked={answers[question.id] === 'accepted'} onChange={event => setAnswers(current => ({ ...current, [question.id]: event.target.checked ? 'accepted' : '' }))} />{t('preflight.acceptWarning')}</label> : null}
       </div>
-      <footer><button type="button" className="secondary-action" onClick={() => finish(null)}>{t('common.cancel')}</button><div>{index > 0 && <button type="button" className="secondary-action" onClick={() => setIndex(value => value - 1)}>{t('preflight.previous')}</button>}<button type="button" className="primary-action" disabled={!answerIsValid(question, answers[question.id]) || (last && !session.questions.every(item => answerIsValid(item, answers[item.id])))} onClick={() => last ? finish(answers) : setIndex(value => value + 1)}>{last ? session.finalLabel : t('preflight.next')}</button></div></footer>
+      <footer><button type="button" className="secondary-action" onClick={() => finish(null)}>{t('common.cancel')}</button><div>{index > 0 && <button type="button" className="secondary-action" onClick={() => setIndex(value => value - 1)}>{t('preflight.previous')}</button>}<button type="button" className="primary-action" disabled={!currentValid || (last && !complete)} onClick={() => last ? finish({...answers,...(summary ? {[question.id]:answers[question.id] ?? 'accepted'} : {})}) : setIndex(value => value + 1)}>{last ? session.finalLabel : t('preflight.next')}</button></div></footer>
     </section>
   </div>;
 }

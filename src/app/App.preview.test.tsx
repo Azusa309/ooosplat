@@ -998,15 +998,15 @@ describe("App preview workspace", () => {
     expect(container.querySelector(".reshoot-workflow-dialog")).toBeNull();
     expect(container.querySelector(".reshoot-task-page")).not.toBeNull();
     expect(container.querySelector(".reshoot-source-summary")).toBeNull();
-    expect(container.querySelectorAll(".reshoot-task-page .quality-option:disabled")).toHaveLength(3);
-    expect(container.querySelector(".reshoot-task-page .locked-setting")?.textContent).toContain("继承源任务 · 不可修改");
-    expect(container.querySelector(".reshoot-task-page .locked-quality-settings .quality-option.selected")).not.toBeNull();
-    expect(container.querySelector<HTMLButtonElement>(".reshoot-task-page .planner-switch")?.disabled).toBe(true);
+    expect(container.querySelectorAll(".reshoot-task-page .quality-option:disabled")).toHaveLength(0);
+    expect(container.querySelector(".reshoot-task-page .locked-setting")).toBeNull();
+    expect(container.querySelector(".reshoot-task-page .quality-option.selected")).not.toBeNull();
+    expect(container.querySelector<HTMLButtonElement>(".reshoot-task-page .planner-switch")?.disabled).toBe(false);
     expect(container.querySelector<HTMLButtonElement>(".reshoot-task-page .planner-switch")?.getAttribute("aria-checked")).toBe("true");
     expect(container.querySelector(".reshoot-task-page .planner-switch em")).toBeNull();
   });
 
-  it("shows automatic optimization as locked off when the source task disabled it", async () => {
+  it("defaults optimization to the source value but allows changing it", async () => {
     mocks.inspectReshootSource.mockResolvedValueOnce({
       projectId: project.id,
       projectName: project.name,
@@ -1025,7 +1025,7 @@ describe("App preview workspace", () => {
     await flush();
 
     const planner = container.querySelector<HTMLButtonElement>(".reshoot-task-page .planner-switch");
-    expect(planner?.disabled).toBe(true);
+    expect(planner?.disabled).toBe(false);
     expect(planner?.getAttribute("aria-checked")).toBe("false");
     expect(planner?.textContent).not.toContain("继承源任务");
   });
@@ -1067,7 +1067,27 @@ describe("App preview workspace", () => {
     expect(planner.getAttribute("aria-checked")).toBe("false");
   });
 
-  it("probes Alpha reshoot media and blocks a mismatched camera resolution", async () => {
+  it.each([false, true])('starts reshoot only after the condition and summary, with explicit fallback=%s', async allowFallback => {
+    mocks.inspectReshootSource.mockResolvedValue({ projectId:project.id,projectName:project.name,quality:'balanced',plannerEnabled:true,cameraId:1,cameraModel:'SIMPLE_RADIAL',width:1920,height:1080,sourceImageCount:100,eligible:true,reason:null,sourceIdentity:'source-v1',projection:'perspective',warmAvailable:true });
+    mocks.selectVideo.mockResolvedValue('E:/new-camera.mov');
+    mocks.probeReshootInput.mockResolvedValue({ inputType:'video',imageCount:null,duration:12,preparedWidth:1280,preparedHeight:1920,estimatedFrames:30,hasAlpha:false,maskCount:0,compatible:true,incompatibilityReason:null,sourceIdentity:'input-v1',estimate:{estimatedMs:1000,lowerBoundMs:500,upperBoundMs:2000,confidence:'low',sampleCount:0,basis:''} });
+    mocks.startReshootPipeline.mockImplementation(() => new Promise(() => {}));
+    await act(async () => container.querySelector<HTMLButtonElement>('.reshoot-link')!.click()); await flush();
+    await act(async () => container.querySelector<HTMLButtonElement>('.reshoot-task-page .input-picker > .path-picker')!.click()); await flush();
+    await act(async () => container.querySelector<HTMLButtonElement>('.reshoot-task-page .primary-action')!.click()); await flush();
+    expect(mocks.startReshootPipeline).not.toHaveBeenCalled();
+    expect(container.querySelectorAll('.preflight-dialog input:checked')).toHaveLength(0);
+    await act(async () => container.querySelector<HTMLInputElement>('.preflight-dialog input[value="good"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('.preflight-dialog footer .primary-action')!.click());
+    expect(container.querySelector('.preflight-dialog')?.textContent).toContain('增量重建＋原模型优化');
+    if (allowFallback) await act(async () => container.querySelector<HTMLInputElement>('.preflight-dialog input[type="checkbox"]:not(:disabled)')!.click());
+    expect(mocks.startReshootPipeline).not.toHaveBeenCalled();
+    await act(async () => container.querySelector<HTMLButtonElement>('.preflight-dialog footer .primary-action')!.click()); await flush();
+    expect(mocks.startReshootPipeline).toHaveBeenCalledTimes(1);
+    expect(mocks.startReshootPipeline).toHaveBeenCalledWith(expect.objectContaining({reshootOptions:expect.objectContaining({condition:'good',allowFallback,sourceIdentity:'source-v1',inputIdentity:'input-v1',projection:'perspective'})}));
+  });
+
+  it("probes Alpha reshoot media and preserves a backend incompatibility refusal", async () => {
     mocks.selectVideo.mockResolvedValue("E:\\Capture\\reshoot.mov");
     mocks.probeReshootInput.mockResolvedValue({
       inputType: "video",
@@ -1091,7 +1111,7 @@ describe("App preview workspace", () => {
     await act(async () => { videoButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flush();
 
-    expect(mocks.probeReshootInput).toHaveBeenCalledWith(project.id, "E:\\Capture\\reshoot.mov", "video");
+    expect(mocks.probeReshootInput).toHaveBeenCalledWith(project.id, "E:\\Capture\\reshoot.mov", "video", "balanced", true);
     expect(container.querySelector(".reshoot-plan.incompatible")?.textContent).toContain("1080 × 1920");
     expect(container.querySelector<HTMLButtonElement>(".reshoot-task-page .primary-action")?.disabled).toBe(true);
   });

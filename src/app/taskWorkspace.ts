@@ -67,7 +67,7 @@ export function createGenerationDraft(ordinal: number, plannerEnabled = true, pl
 export function createReshootDraft(ordinal: number, sourceProjectId: string, sourceProjectName: string, quality: Quality, plannerEnabled = true): TaskDraft {
   return {
     ...createGenerationDraft(ordinal, plannerEnabled), kind: "reshoot", sourceProjectId, sourceProjectName,
-    quality, needsValidation: true,
+    quality, needsValidation: true, plannerDefaultPending: true,
   };
 }
 

@@ -20,9 +20,10 @@ interface Props {
   inheritedFrom?: 'resume' | 'reshoot' | null;
   videoProjection?: import('../types/pipeline').VideoProjection | null;
   inputProjection?: import('../types/pipeline').VideoProjection | null;
+  reshootRecipe?: import('../types/pipeline').ReshootRecipeSummary | null;
 }
 
-export function TaskConfiguration({ sourcePath, projectsRoot, inputType, quality, plannerEnabled, completed, acceleration, video, imageSequence, estimatedFrames, estimate, inheritedFrom, videoProjection, inputProjection }: Props) {
+export function TaskConfiguration({ sourcePath, projectsRoot, inputType, quality, plannerEnabled, completed, acceleration, video, imageSequence, estimatedFrames, estimate, inheritedFrom, videoProjection, inputProjection, reshootRecipe }: Props) {
   const { locale, t, formatNumber, formatDuration } = useI18n();
   const temporary = acceleration?.detectionState === 'temporarilyUnavailable';
   const warning = acceleration?.backend === 'cpu';
@@ -30,6 +31,12 @@ export function TaskConfiguration({ sourcePath, projectsRoot, inputType, quality
   const visibleSourcePath = displayPath(sourcePath);
   const visibleProjectsRoot = displayPath(projectsRoot);
   return <div className="project-configuration-detail">
+    {reshootRecipe && <div className="form-section"><label className="field-label">{t('reshoot.planTitle')}</label>
+      <p>{t(`reshoot.condition.${reshootRecipe.options.condition}`)}</p>
+      {(reshootRecipe.initial.reconstruction !== reshootRecipe.actual.reconstruction || reshootRecipe.initial.training !== reshootRecipe.actual.training) && <p>{t(reshootRecipe.initial.reconstruction === 'full' ? 'reshoot.planFull' : reshootRecipe.initial.training === 'warm' ? 'reshoot.planWarm' : 'reshoot.planCold')} →</p>}
+      <p>{t(reshootRecipe.actual.reconstruction === 'full' ? 'reshoot.planFull' : reshootRecipe.actual.training === 'warm' ? 'reshoot.planWarm' : 'reshoot.planCold')}</p>
+      <label><input type="checkbox" checked={reshootRecipe.options.allowFallback} disabled /> {t('reshoot.allowFallback')}</label>
+    </div>}
     <div className="form-section"><label className="field-label">{t('input.label')}</label>
       <div className="source-input-card readonly"><div className="path-picker media-path readonly" title={visibleSourcePath}><span><strong>{taskBasename(visibleSourcePath)}</strong><small>{visibleSourcePath}</small></span></div><MediaSourceStatus historical inputType={inputType} projection={inputProjection ?? videoProjection} /></div>
     </div>

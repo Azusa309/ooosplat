@@ -437,6 +437,8 @@ pub struct PipelineStateFile {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReshootState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<crate::pipeline::reshoot::ReshootRecipe>,
     pub source_snapshot_complete: bool,
     pub supplemental_frames_complete: bool,
     pub supplemental_features_complete: bool,

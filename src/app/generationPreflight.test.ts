@@ -49,7 +49,7 @@ describe('generation preflight registry', () => {
         for (const value of [undefined, '', 'accepted', 'other']) expect(answerIsValid(questions[0], value)).toBe(false);
         for (const value of ['sequential', 'exhaustive']) expect(answerIsValid(questions[0], value)).toBe(true);
       }
-      expect(collectPreflightQuestions([{ ...draft, kind: 'reshoot' }])).toHaveLength(0);
+      expect(collectPreflightQuestions([{ ...draft, kind: 'reshoot' }]).map(q => q.kind)).toEqual(imageCount > 100 ? ['reshootCondition','imageOrder','reshootSummary'] : ['reshootCondition','reshootSummary']);
       expect(collectPreflightQuestions([{ ...draft, inputType: 'video' }])).toHaveLength(0);
       expect(preflightSnapshot({ ...draft, quality: 'high' })).not.toBe(preflightSnapshot(draft));
       expect(preflightSnapshot({ ...draft, imageSequence: { ...draft.imageSequence, imageCount: imageCount + 1 } })).not.toBe(preflightSnapshot(draft));

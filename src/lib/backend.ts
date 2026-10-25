@@ -128,9 +128,9 @@ export async function resumePipeline(projectId: string): Promise<PipelineResult>
   const receipt = await invoke<StartReceipt>("resume_gui_task", { projectId });
   return waitForSharedTask(receipt.task_id);
 }
-export async function inspectReshootSource(projectId: string): Promise<ReshootSourceInfo> { return invoke("inspect_reshoot_source", { projectId }); }
-export async function probeReshootInput(projectId: string, path: string, inputType: InputType): Promise<ReshootInputInfo> { return invoke("probe_reshoot_input", { projectId, path, inputType }); }
-export async function startReshootPipeline(request: { sourceProjectId: string; reshootPath: string; inputType: InputType; projectsRoot: string; workspaceTaskId?: string; quality?: Quality; plannerEnabled?: boolean }): Promise<PipelineResult> {
+export async function inspectReshootSource(projectId: string): Promise<ReshootSourceInfo> { return invoke("inspect_reshoot_source", { projectId, recipeVersion: 2 }); }
+export async function probeReshootInput(projectId: string, path: string, inputType: InputType, quality: Quality = "balanced", plannerEnabled = true): Promise<ReshootInputInfo> { return invoke("probe_reshoot_input", { projectId, path, inputType, recipeVersion: 2, quality, plannerEnabled }); }
+export async function startReshootPipeline(request: { sourceProjectId: string; reshootPath: string; inputType: InputType; projectsRoot: string; workspaceTaskId?: string; quality?: Quality; plannerEnabled?: boolean; reshootOptions?: import('../types/pipeline').ReshootOptions }): Promise<PipelineResult> {
   const receipt = await invoke<StartReceipt>("start_gui_reshoot", { request });
   return waitForSharedTask(receipt.task_id);
 }

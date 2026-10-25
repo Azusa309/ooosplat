@@ -59,13 +59,13 @@ https://github.com/user-attachments/assets/5b9e8cef-4c71-4bfa-ba23-641fcdd37659
 - **Three quality presets**: Fast, Balanced, and Detailed are available. Auto Optimize selects suitable extraction, resolution, and training settings for the source and available VRAM.
 - **Transparent media**: Transparent MOV and PNG files retain their original color and Alpha while OOOSplat creates the black-and-white masks required by COLMAP.
 - **Multi-task workspace**: Group tasks into New Tasks, Completed, and Unfinished. Keep multiple drafts, reorder them, and automatically run the next task. Only one generation task runs at a time; tasks can be cancelled or resumed.
-- **Reshoots**: Create a task from a completed project, reuse its camera and reconstruction for new media, then retrain from all registered images. The derived project does not overwrite the original.
+- **Reshoots**: Choose incremental/full reconstruction and model refinement/retraining based on the original result. Supports mixed-size ordinary inputs and full ERP reshoots in a separate derived project.
 - **Preview and editing**: Supports WebGPU/WebGL2, translation axes, rotation rings, cropping, deletion, inversion, undo, and redo. Use WASD for horizontal navigation or Auto locate view to return to the first training view.
 - **Multiple export formats**: Export standard PLY, compressed PLY, SPZ v4, bundled SOG, portrait or landscape MP4, and standalone offline HTML.
 - **Local processing**: COLMAP reconstruction and Brush training run on the user's computer, using GPU acceleration when available.
 - **Cross-platform and bilingual**: Supports Windows, Apple Silicon macOS, and Ubuntu, with Simplified Chinese and English interfaces.
 
-Panorama folders need at least two same-sized images; a 2:1 ratio alone does not confirm ERP. Dual-fisheye, stereo, VR180, cropped panoramas, and private camera originals are unsupported, as are panorama reshoots. Panorama caches no longer have a fixed 20 GiB cap; reserve enough disk space. The per-image decode limit remains 512 MiB. See the [video](docs/PANORAMA_VIDEO_V1.md) and [image support notes](docs/PANORAMA_IMAGES_V1.md) for formats, parameters, and verification limits.
+Each panorama batch needs at least two same-sized images; a 2:1 ratio alone does not confirm ERP. Dual-fisheye, stereo, VR180, cropped panoramas, private originals, and mixed ordinary/panorama reshoots are unsupported. Panorama caches have no fixed 20 GiB cap; reserve enough disk space. The per-image decode limit remains 512 MiB. See the [video](docs/PANORAMA_VIDEO_V1.md), [image](docs/PANORAMA_IMAGES_V1.md), and [reshoot notes](docs/RESHOOT_V2.md) for verification limits.
 
 ### Gaussian Editing Shortcuts
 
@@ -159,7 +159,7 @@ Sample media: [Download from Quark Drive](https://pan.quark.cn/s/1dde892a1324) t
 7. Follow the selected task's stages, progress, and logs on the left. Click any task on the right to switch details. Generated projects appear under Completed or Unfinished; completed projects offer Preview.
 8. Edit the model in “Preview → Adjust.” Transforms, crops, and deletions are saved automatically in the project; each project's view is stored locally on this device. “Save edits” confirms that the current edits and view have been saved. Choose standard PLY, compressed PLY, SPZ, or SOG directly from “Export,” with no second format confirmation. Both Adjust and Animation support model export.
 9. Switch to Animation, choose Portrait or Landscape, and use Export → Export video for a 30 FPS, 23-second MP4 at 1080×1920 or 1920×1080 respectively. Both Adjust and Animation can export offline HTML. Exports use the current edits, can be cancelled, and provide access to the output folder on completion.
-10. To add detail, choose Reshoot on a completed project. A reshoot draft appears in New Tasks instead of a separate configuration dialog. Choose new media in the left panel and start generation after validation. Use the original device, lens, and camera settings, with plenty of overlap between new and existing views.
+10. To add detail, choose Reshoot on a completed project. Select the new media and type, optionally adjust quality/Auto Optimize, then start generation to answer the model-condition question and confirm the plan. A slower fallback requires separate authorization. New and old views must overlap and show the same scene.
 
 Usage notes:
 
@@ -167,14 +167,14 @@ Usage notes:
 - Use the percentage button in the lower-right corner to reduce, reset, or increase the interface scale.
 - Drafts are saved locally and their media is rechecked after restart. Running-task parameters cannot be changed, but other drafts remain editable. A second task cannot run concurrently.
 - Drag new tasks to reorder them. Auto-run next task is off by default and never skips an unready task. Image-order questions pause startup; cancelling disables the queue.
-- Reshoots inherit the source project's quality and Auto Optimize settings. Original media cannot be submitted again. Images must match the original camera dimensions; video can be reduced to those dimensions at the same aspect ratio, but cannot be enlarged or recropped. Projects with missing reconstruction data or incompatible older image caches must be regenerated first.
-- Reshoots extract features only for new images and extend matching and reconstruction in copies of the original database and model. Brush retrains from all registered images. The derived project inherits the model transform, not deletion or crop edits.
+- New reshoots default to the source quality/Auto Optimize settings, editable before launch. Ordinary batches can differ in resolution, aspect ratio, device, and lens; full ERP batches can differ in size across batches. Original media cannot be submitted again. Missing trusted image/reconstruction snapshots prevent launch.
+- Refinement initializes from the unedited generated PLY with a new optimizer, training on both old and new views. It is not a full optimizer resume and does not freeze the old scene. The display transform is inherited, not deletion/crop edits. Existing legacy tasks keep their saved behavior. See the [reshoot recipe and validation notes](docs/RESHOOT_V2.md).
 - Task pages keep the latest 500 log entries; complete engine logs remain in the project's `logs/` directory. The training runtime monitor is hidden by default and can be enabled under Settings → Interface.
 - Delete moves the complete project, including source copies and intermediate files, to the Recycle Bin. OOOSplat does not fall back to permanent deletion if that operation fails.
 
 ## Quality Presets
 
-With Auto Optimize enabled, sequential matching for video and confirmed ordered images uses the preset's offline loop-detection rules; disabling it turns loop detection off. Matching may take longer, and valid loops are not guaranteed. Reshoot and Bridge matching are unchanged. See the [parameter configuration guide](docs/pipeline-optimization-config.en.md).
+With Auto Optimize enabled, sequential matching for video and confirmed ordered images uses the preset's offline loop-detection rules; disabling it turns loop detection off. Valid loops are not guaranteed. New reshoots match old/new views separately and use window 10 plus the preset's loop policy among new ordered views. Bridge matching is unchanged. See the [parameter configuration guide](docs/pipeline-optimization-config.en.md).
 
 “Auto Optimize (Experimental)” is enabled by default. Ordinary video is scaled once during extraction to the selected working resolution while preserving aspect ratio and never upscaling lower-resolution media. Actual sampling never exceeds the source FPS or total frame count. Ordinary image sequences keep every valid image at its original input resolution, while COLMAP and Brush still apply the selected preset's processing limits.
 
