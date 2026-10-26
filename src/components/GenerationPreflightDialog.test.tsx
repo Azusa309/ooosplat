@@ -63,30 +63,73 @@ it('switches mutually exclusive choices, retains them across navigation, and use
   expect(finish.mock.calls[0][0]['second:imageOrder']).toBe('exhaustive');
 });
 
-it.each(['good','appearance','geometry','unsure'])('reshoot asks one question, shows the plan, and never opts into fallback by default (%s)', async condition => {
+it.each(['good','appearance','geometry','unsure'])('reshoot explains each approach and asks camera settings before starting (%s)', async condition => {
   const reshoot = {...createReshootDraft(1,'source','Original','balanced'), inputPath:'E:/new-images', reshootSource:{ projectId:'source',projectName:'Original',quality:'balanced' as const,plannerEnabled:true,cameraId:1,cameraModel:'SIMPLE_RADIAL',width:100,height:100,sourceImageCount:20,eligible:true,reason:null,imported:false,warmAvailable:true }};
   await act(async () => root.render(<LanguageProvider><GenerationPreflightDialog session={{ questions:collectPreflightQuestions([reshoot]),finalLabel:'开始生成',resolve:finish }} onFinish={finish} /></LanguageProvider>));
   expect(container.querySelector('h2')?.textContent).toBe('原模型目前是什么情况？');
   expect(container.querySelectorAll('input[type="radio"]')).toHaveLength(4);
   expect(container.querySelector('input:checked')).toBeNull();
   expect(button().disabled).toBe(true);
+  expect(button().textContent).toBe('下一步');
+  expect(container.querySelectorAll('.preflight-condition small')).toHaveLength(4);
+  expect(container.querySelector('.preflight-choices')?.textContent).not.toMatch(/增量|重建|微调|COLMAP|Brush|SfM/);
+  expect(container.querySelector('input[type="checkbox"]')).toBeNull();
   await act(async () => container.querySelector<HTMLInputElement>(`input[value="${condition}"]`)!.click());
   await act(async () => button().click());
-  expect(container.querySelector('h2')?.textContent).toBe('补拍方案');
-  expect(container.textContent).toContain(condition === 'good' ? '增量重建＋原模型优化' : condition === 'geometry' ? '全量重建＋重新训练' : '增量重建＋重新训练');
-  expect(container.querySelector<HTMLInputElement>('input:not(:disabled)')!.checked).toBe(false);
-  await act(async () => button().click());
+  expect(container.querySelector('h2')?.textContent).toBe('补拍素材与原素材的拍摄设置相同吗？');
+  expect(container.querySelector('input:checked')).toBeNull();
+  expect(button().disabled).toBe(true);
+  expect(finish).not.toHaveBeenCalled();
+  await act(async () => container.querySelector<HTMLInputElement>('input[value="same"]')!.click());
+  await act(async () => { button().click(); button().click(); });
   expect(finish).toHaveBeenCalledTimes(1);
-  expect(finish.mock.calls[0][0][`${reshoot.id}:reshootSummary`]).toBe('accepted');
+  expect(finish.mock.calls[0][0]).toEqual({[`${reshoot.id}:reshootCondition`]:condition,[`${reshoot.id}:reshootCamera`]:'same'});
 });
 
-it('reshoot fallback requires an explicit checkbox and cancellation never submits it', async () => {
+it('reshoot cancellation submits no partial answer and missing models are explained without promising reuse', async () => {
   const reshoot = {...createReshootDraft(1,'source','Original','high'), inputPath:'E:/new.mp4'};
   await act(async () => root.render(<LanguageProvider><GenerationPreflightDialog session={{questions:collectPreflightQuestions([reshoot]),finalLabel:'开始生成',resolve:finish}} onFinish={finish} /></LanguageProvider>));
   await act(async () => container.querySelector<HTMLInputElement>('input[value="good"]')!.click());
-  await act(async () => button().click());
-  expect(container.textContent).toContain('增量重建＋重新训练'); // No trusted PLY: never promise warm start.
-  await act(async () => container.querySelector<HTMLInputElement>('input:not(:disabled)')!.click());
+  expect(container.textContent).toContain('原模型不可用时重新生成');
   await act(async () => container.querySelector('[role="dialog"]')!.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})));
   expect(finish).toHaveBeenCalledWith(null);
+});
+
+it('reshoot with more than 100 images asks condition, camera and order and preserves Back answers', async () => {
+  const reshoot = {...createReshootDraft(1,'source','Original','balanced'), inputType:'images' as const, inputPath:'E:/new-images',imageSequence:{...second.imageSequence,imageCount:101}};
+  await act(async () => root.render(<LanguageProvider><GenerationPreflightDialog session={{questions:collectPreflightQuestions([reshoot]),finalLabel:'开始生成',resolve:finish}} onFinish={finish} /></LanguageProvider>));
+  await act(async () => container.querySelector<HTMLInputElement>('input[value="appearance"]')!.click());
+  await act(async () => button().click());
+  expect(container.querySelector('h2')?.textContent).toBe('补拍素材与原素材的拍摄设置相同吗？');
+  await act(async () => container.querySelector<HTMLInputElement>('input[value="different"]')!.click());
+  await act(async () => button().click());
+  expect(container.querySelector('h2')?.textContent).toBe('确认图片顺序');
+  expect(button().textContent).toBe('开始生成');
+  expect(button().disabled).toBe(true);
+  await act(async () => container.querySelector<HTMLInputElement>('input[value="sequential"]')!.click());
+  await act(async () => container.querySelector<HTMLButtonElement>('footer > div > .secondary-action')!.click());
+  expect(container.querySelector<HTMLInputElement>('input[value="different"]')!.checked).toBe(true);
+  await act(async () => container.querySelector<HTMLButtonElement>('footer > div > .secondary-action')!.click());
+  expect(container.querySelector<HTMLInputElement>('input[value="appearance"]')!.checked).toBe(true);
+  await act(async () => button().click());
+  await act(async () => button().click());
+  expect(container.querySelector<HTMLInputElement>('input[value="sequential"]')!.checked).toBe(true);
+  await act(async () => button().click());
+  expect(finish).toHaveBeenCalledWith({[`${reshoot.id}:reshootCondition`]:'appearance',[`${reshoot.id}:reshootCamera`]:'different',[`${reshoot.id}:imageOrder`]:'sequential'});
+});
+
+it('reshoot descriptions use plain English without a second plan confirmation', async () => {
+  localStorage.setItem('ooo-splat-language', 'en');
+  const reshoot = {...createReshootDraft(1,'source','Original','balanced'), inputPath:'E:/new.mov'};
+  await act(async () => root.render(<LanguageProvider><GenerationPreflightDialog session={{questions:collectPreflightQuestions([reshoot]),finalLabel:'Start generation',resolve:finish}} onFinish={finish} /></LanguageProvider>));
+  expect(container.querySelectorAll('.preflight-condition small')).toHaveLength(4);
+  expect(container.querySelector('.preflight-choices')?.textContent).toContain('camera positions');
+  expect(container.querySelector('.preflight-choices')?.textContent).not.toMatch(/incremental|reconstruction|fine-tun|COLMAP|Brush|SfM/i);
+  expect(button().textContent).toBe('Next');
+  await act(async () => container.querySelector<HTMLInputElement>('input[value="good"]')!.click());
+  await act(async () => button().click());
+  expect(container.querySelector('#preflight-description')?.textContent).toContain('stabilization');
+  expect(container.querySelectorAll('input[type="radio"]')).toHaveLength(3);
+  expect(container.querySelector('input:checked')).toBeNull();
+  expect(button().textContent).toBe('Start generation');
 });

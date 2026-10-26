@@ -5,10 +5,19 @@ export type TranslationParams = Record<string, string | number>;
 
 const zhCN = {
   "reshoot.conditionTitle": "原模型目前是什么情况？",
+  "reshoot.cameraTitle": "补拍素材与原素材的拍摄设置相同吗？",
+  "reshoot.cameraDescription": "请确认设备、镜头、焦距、分辨率、画面裁切和防抖设置是否相同。拿不准时请选择“不确定”。",
+  "reshoot.camera.same": "相同",
+  "reshoot.camera.different": "不同",
+  "reshoot.camera.unsure": "不确定",
   "reshoot.condition.good": "整体正常，只想补充细节",
   "reshoot.condition.appearance": "整体结构正常，但生成效果不满意",
   "reshoot.condition.geometry": "明显变形或位置错乱",
   "reshoot.condition.unsure": "不确定",
+  "reshoot.condition.goodHint": "沿用原模型，用补拍内容补充细节；原模型不可用时重新生成。",
+  "reshoot.condition.appearanceHint": "沿用已确定的拍摄位置，把原素材和补拍素材一起重新生成。",
+  "reshoot.condition.geometryHint": "重新确定所有画面的拍摄位置，再把原素材和补拍素材一起重新生成。",
+  "reshoot.condition.unsureHint": "先沿用已确定的拍摄位置，把原素材和补拍素材一起重新生成。",
   "reshoot.planTitle": "补拍方案",
   "reshoot.planWarm": "增量重建＋原模型优化",
   "reshoot.planCold": "增量重建＋重新训练",
@@ -804,10 +813,19 @@ export type TranslationKey = keyof typeof zhCN;
 
 const en: Record<TranslationKey, string> = {
   "reshoot.conditionTitle": "What is the current model like?",
+  "reshoot.cameraTitle": "Were the new captures taken with the same settings as the originals?",
+  "reshoot.cameraDescription": "Check that the device, lens, focal length, resolution, cropping, and stabilization settings are the same. Choose “Not sure” if you cannot confirm.",
+  "reshoot.camera.same": "Same",
+  "reshoot.camera.different": "Different",
+  "reshoot.camera.unsure": "Not sure",
   "reshoot.condition.good": "Generally good; I only want to add detail",
   "reshoot.condition.appearance": "The overall structure is correct, but the generated result is unsatisfactory",
   "reshoot.condition.geometry": "Clearly distorted or incorrectly positioned",
   "reshoot.condition.unsure": "Not sure",
+  "reshoot.condition.goodHint": "Use the original model and add detail from the new captures. Generate a new model if the original is unavailable.",
+  "reshoot.condition.appearanceHint": "Keep the camera positions already found and generate a new model using both the original and new captures.",
+  "reshoot.condition.geometryHint": "Work out the camera positions for all images again, then generate a new model using both the original and new captures.",
+  "reshoot.condition.unsureHint": "First try keeping the camera positions already found and generate a new model using both the original and new captures.",
   "reshoot.planTitle": "Reshoot plan",
   "reshoot.planWarm": "Incremental reconstruction + refinement of the original model",
   "reshoot.planCold": "Incremental reconstruction + retraining",
@@ -1232,7 +1250,20 @@ export function useI18n() {
   };
 }
 
+const reshootCacheEnglish: Record<string, string> = {
+  "原项目文件": "original project files",
+  "补拍画面": "reshoot frames",
+  "特征提取": "feature extraction",
+  "图像匹配": "image matching",
+  "Splat 训练": "Splat training",
+};
+
 const exactPipelineEnglish: Record<string, string> = {
+  "正在准备原模型训练副本": "Preparing the original model training snapshot",
+  "补拍处理仍在进行，当前步骤可能耗时较长，请耐心等待": "Reshoot processing is still running. This step may take a while. Please wait.",
+  "补拍相机设置：沿用原设置": "Reshoot camera settings: reusing the original settings",
+  "补拍相机设置：独立处理": "Reshoot camera settings: processing independently",
+  "补拍相机设置：条件不兼容，独立处理": "Reshoot camera settings: incompatible conditions, processing independently",
   "初始化点数超出当前全景训练预算，已停止训练以避免丢弃初始点。": "Initial point count exceeds the current panorama training budget. Training stopped to avoid dropping initial points.",
   "外部进程执行失败：初始化点数超出当前全景训练预算，已停止训练以避免丢弃初始点。": "Initial point count exceeds the current panorama training budget. Training stopped to avoid dropping initial points.",
   "已校验并复用训练缓存": "Verified and reused training caches",
@@ -1372,6 +1403,13 @@ export function localizePipelineMessage(locale: Locale, message: string): string
     [/^正在补全补拍不透明 Mask ([\d,]+)\/([\d,]+) 张$/, (current, total) => `Completing opaque reshoot masks ${current}/${total}`],
     [/^将处理全部 ([\d,]+) 张图片$/, (count) => `All ${count} images will be processed`],
     [/^已复用 ([\d,]+) 帧检查点$/, (count) => `Reused checkpoint with ${count} frames`],
+    [/^正在准备原项目文件：(\d+)\/(\d+)$/, (current,total) => `Preparing original project files: ${current}/${total}`],
+    [/^正在准备补拍画面：(\d+)\/(\d+)$/, (current,total) => `Preparing reshoot frames: ${current}/${total}`],
+    [/^正在整理补拍画面：(\d+)\/(\d+)$/, (current,total) => `Organizing reshoot frames: ${current}/${total}`],
+    [/^正在检查画面与蒙版：(\d+)\/(\d+)$/, (current,total) => `Checking images and masks: ${current}/${total}`],
+    [/^补拍画面准备完成：原画面 (\d+) 张，新增 (\d+) 张$/, (source,added) => `Reshoot frames prepared: ${source} original images, ${added} new images`],
+    [/^补拍画面已加入：(\d+)\/(\d+)$/, (current,total) => `Reshoot images registered: ${current}/${total}`],
+    [/^复用已完成的补拍缓存：(.+)$/, stage => `Reusing completed reshoot cache: ${reshootCacheEnglish[stage] ?? localizePipelineMessage('en', stage)}`],
     [/^已发布 ([\d,]+) 个 Splat$/, (count) => `Published ${count} splats`],
     [/^进程已启动 · PID ([\d]+)$/, (pid) => `Process started · PID ${pid}`],
     [/^FFmpeg 已输出 ([\d,]+) 帧$/, (count) => `FFmpeg produced ${count} frames`],

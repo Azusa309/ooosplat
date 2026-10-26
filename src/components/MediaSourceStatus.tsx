@@ -46,6 +46,6 @@ export function MediaSourceStatus({ inputType, checking, error, detection, proje
       <option value="perspective">{t(images ? 'source.images' : 'panorama.ordinaryDetected')}</option>
       <option value="equirectangular" disabled={!detection?.supportedErp}>{t(images ? 'source.panoramaImages' : 'source.fullPanorama')}</option>
     </select>}
-    {!historical && detection?.unsupported && <p className="media-source-warning">{t(images ? 'source.unsupportedImages' : 'panorama.unsupported')}</p>}
+    {!historical && detection?.unsupported && projection !== 'perspective' && <p className="media-source-warning">{t(images ? 'source.unsupportedImages' : 'panorama.unsupported')}</p>}
   </div>;
 }

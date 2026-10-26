@@ -1,7 +1,7 @@
 import type { TaskDraft } from './taskWorkspace';
 import type { ImageMatchingStrategy, VideoProjection } from '../types/pipeline';
 
-export type PreflightKind = 'smallImages' | 'imageOrder' | 'reshootCondition' | 'reshootSummary';
+export type PreflightKind = 'smallImages' | 'imageOrder' | 'reshootCondition' | 'reshootCamera';
 export interface PreflightQuestion { id: string; kind: PreflightKind; draft: TaskDraft; snapshot: string }
 export type PreflightAnswers = Record<string, string>;
 export const projectionIdentity = (draft: TaskDraft) => draft.projectionDetection?.sourceIdentity || draft.inputPath || '';
@@ -21,22 +21,17 @@ const checks: Array<{ kind: PreflightKind; applies: (draft: TaskDraft) => boolea
 export function collectPreflightQuestions(drafts: TaskDraft[]): PreflightQuestion[] {
   return drafts.filter(d => !d.running && !!d.inputPath).flatMap(draft => draft.kind === 'reshoot' ? [
     { id: `${draft.id}:reshootCondition`, kind: 'reshootCondition' as const, draft, snapshot: preflightSnapshot(draft) },
+    ...(draft.reshootSource?.projection === 'equirectangular' ? [] : [{ id: `${draft.id}:reshootCamera`, kind: 'reshootCamera' as const, draft, snapshot: preflightSnapshot(draft) }]),
     ...((draft.inputType === 'images' && (draft.reshootPlan?.imageCount ?? draft.imageSequence?.imageCount ?? 0) > 100) ? [{ id: `${draft.id}:imageOrder`, kind: 'imageOrder' as const, draft, snapshot: preflightSnapshot(draft) }] : []),
-    { id: `${draft.id}:reshootSummary`, kind: 'reshootSummary' as const, draft, snapshot: preflightSnapshot(draft) },
   ] : checks
     .filter(check => check.applies(draft))
     .map(check => ({ id: `${draft.id}:${check.kind}`, kind: check.kind, draft, snapshot: preflightSnapshot(draft) })));
 }
 export function answerIsValid(question: PreflightQuestion, answer?: string) {
   if (question.kind === 'reshootCondition') return ['good','appearance','geometry','unsure'].includes(answer ?? '');
-  if (question.kind === 'reshootSummary') return answer === 'accepted' || answer === 'fallback';
+  if (question.kind === 'reshootCamera') return ['same','different','unsure'].includes(answer ?? '');
   return question.kind === 'imageOrder' ? answer === 'sequential' || answer === 'exhaustive' : answer === 'accepted';
 }
 export function imageMatchingStrategy(draft: TaskDraft, answers: PreflightAnswers): ImageMatchingStrategy {
   return draft.inputType === 'images' && (draft.reshootPlan?.imageCount ?? draft.imageSequence?.imageCount ?? 0) > 100 && answers[`${draft.id}:imageOrder`] === 'sequential' ? 'sequential' : 'exhaustive';
-}
-
-export function reshootPlanKey(draft: TaskDraft, answers: PreflightAnswers) {
-  const condition = answers[`${draft.id}:reshootCondition`];
-  return condition === 'geometry' ? 'reshoot.planFull' : condition === 'good' && draft.reshootSource?.warmAvailable ? 'reshoot.planWarm' : 'reshoot.planCold';
 }

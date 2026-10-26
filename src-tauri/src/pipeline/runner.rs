@@ -2447,6 +2447,8 @@ impl PipelineRunner {
             candidate
         };
 
+        self.events
+            .stage(PipelineStage::Exporting, 0.0, "正在校验并发布 final.ply");
         let ply = inspect_gaussian_ply(&candidate)?;
         let final_ply = paths.project.join("final.ply");
         atomic_replace_file(&candidate, &final_ply).await?;
@@ -2482,6 +2484,11 @@ impl PipelineRunner {
         if let Some(output) = &metadata.output {
             self.record_final_metrics(output);
         }
+        self.events.stage(
+            PipelineStage::Exporting,
+            1.0,
+            format!("已发布 {} 个 Splat", ply.splat_count),
+        );
         self.events
             .stage(PipelineStage::Completed, 1.0, "高清补拍处理完成");
         Ok(PipelineResult {

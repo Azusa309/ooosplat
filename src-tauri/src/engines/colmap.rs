@@ -873,6 +873,7 @@ pub struct ReshootFeatureOptions<'a> {
     pub list: &'a Path,
     pub masks: Option<&'a Path>,
     pub panorama_dimensions: Option<(u32, u32)>,
+    pub existing_camera_id: Option<u32>,
     pub max_size: u32,
     pub max_features: u32,
 }
@@ -887,7 +888,7 @@ pub async fn extract_reshoot_group(
     gpu: Option<u32>,
 ) -> Result<()> {
     let (use_gpu, gpu_option) = feature_gpu_options(executable, manager).await?;
-    let focal = if options.panorama_dimensions.is_none() {
+    let focal = if options.panorama_dimensions.is_none() && options.existing_camera_id.is_none() {
         crate::video::temporary_png_focal_workaround::detect(
             executable,
             manager,
@@ -910,18 +911,33 @@ pub async fn extract_reshoot_group(
         .panorama_dimensions
         .map(|(w, h)| format!("{w},{h}"))
         .or_else(|| focal.as_ref().map(|f| f.camera_params()));
-    let mut args = feature_extraction_args(
-        database,
-        options.images,
-        options.masks,
-        gpu,
-        use_gpu,
-        gpu_option,
-        Some(options.max_size),
-        Some(options.max_features),
-        Some(options.list),
-        params.as_deref(),
-    );
+    let mut args = if let Some(camera_id) = options.existing_camera_id {
+        incremental_feature_extraction_args(
+            database,
+            options.images,
+            options.list,
+            camera_id,
+            options.masks,
+            gpu,
+            use_gpu,
+            gpu_option,
+            Some(options.max_size),
+            Some(options.max_features),
+        )
+    } else {
+        feature_extraction_args(
+            database,
+            options.images,
+            options.masks,
+            gpu,
+            use_gpu,
+            gpu_option,
+            Some(options.max_size),
+            Some(options.max_features),
+            Some(options.list),
+            params.as_deref(),
+        )
+    };
     if options.panorama_dimensions.is_some() {
         let index = args
             .iter()
@@ -1120,6 +1136,81 @@ pub async fn map_reshoot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "Requires the local real PNG and bundled COLMAP; feature extraction only in an isolated database"]
+    async fn native_reshoot_features_confirm_reused_and_independent_camera_ids() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let source = repo.join(".tmp/focal-diagnosis-20261019/png/images/003A9246.png");
+        let original_hash = crate::video::panorama::fingerprint(&source).unwrap();
+        let dir = tempfile::tempdir_in(repo.join(".cache")).unwrap();
+        let images = dir.path().join("images");
+        std::fs::create_dir(&images).unwrap();
+        for name in ["original.png", "same.png", "different.png"] {
+            std::fs::copy(&source, images.join(name)).unwrap();
+        }
+        let executable = repo.join("engines/colmap/bin/colmap.exe");
+        let database = dir.path().join("database.db");
+        let manager = ProcessManager::default();
+        let mut camera_id = None;
+        for (index, name) in ["original.png", "same.png", "different.png"]
+            .iter()
+            .enumerate()
+        {
+            let list = dir.path().join(format!("group-{index}.txt"));
+            std::fs::write(&list, format!("{name}\n")).unwrap();
+            extract_reshoot_group(
+                &executable,
+                &database,
+                ReshootFeatureOptions {
+                    images: &images,
+                    list: &list,
+                    masks: None,
+                    panorama_dimensions: None,
+                    existing_camera_id: if index == 1 { camera_id } else { None },
+                    max_size: 800,
+                    max_features: 1024,
+                },
+                dir.path().join("features.log"),
+                &manager,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            let db = rusqlite::Connection::open_with_flags(
+                &database,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            let assigned: u32 = db
+                .query_row(
+                    "SELECT camera_id FROM images WHERE name=?1",
+                    [name],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let cameras: u32 = db
+                .query_row("SELECT COUNT(*) FROM cameras", [], |row| row.get(0))
+                .unwrap();
+            if index == 0 {
+                camera_id = Some(assigned);
+            }
+            if index == 1 {
+                assert_eq!(Some(assigned), camera_id);
+                assert_eq!(cameras, 1);
+            }
+            if index == 2 {
+                assert_ne!(Some(assigned), camera_id);
+                assert_eq!(cameras, 2);
+            }
+        }
+        assert_eq!(
+            crate::video::panorama::fingerprint(&source).unwrap(),
+            original_hash
+        );
+        eprintln!("Native camera reuse verified: original/same share one camera; different creates a second camera. Original PNG SHA-256 unchanged.");
+    }
 
     #[tokio::test]
     #[ignore = "Requires the local Ballintoy DB and bundled vocabulary; read-only retrieval in an isolated copied database"]

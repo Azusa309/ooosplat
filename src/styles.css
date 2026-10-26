@@ -271,7 +271,6 @@ h1, h2 { margin: 0; font: 650 29px/1 "Bahnschrift", "Microsoft YaHei UI", sans-s
   background: rgba(19, 26, 39, .54);
   backdrop-filter: blur(3px);
 }
-.reshoot-capture-tips { margin: -5px 0 16px; padding-left: 18px; color: #45536a; font-size: 11px; line-height: 1.7; }
 .reshoot-analysis { display: flex; align-items: center; gap: 7px; margin-top: 14px !important; }
 .reshoot-source-metrics { margin-top: 20px; }
 .locked-quality-settings .quality-option:disabled, .locked-quality-settings .planner-switch:disabled { opacity: 1; }
@@ -422,6 +421,12 @@ h1, h2 { margin: 0; font: 650 29px/1 "Bahnschrift", "Microsoft YaHei UI", sans-s
 .preflight-choices { display: grid; gap: 8px; }
 .preflight-accept { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--line-dark); cursor: pointer; }
 .preflight-accept input { accent-color: var(--blue); flex-shrink: 0; }
+.preflight-condition { align-items: flex-start; }
+.preflight-condition input { margin-top: 5px; }
+.preflight-condition span { min-width: 0; }
+.preflight-condition strong, .preflight-condition small { display: block; }
+.preflight-condition strong { font-weight: 600; }
+.preflight-condition small { margin-top: 3px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .preflight-dialog footer { border-top: 1px solid var(--line); flex-wrap: wrap; }
 .preflight-dialog footer > div { display: flex; gap: 8px; margin-left: auto; }
 .preflight-dialog footer .primary-action { width: auto; min-width: 126px; margin: 0; padding: 0 18px; }

@@ -59,7 +59,7 @@ https://github.com/user-attachments/assets/5b9e8cef-4c71-4bfa-ba23-641fcdd37659
 - **Three quality presets**: Fast, Balanced, and Detailed are available. Auto Optimize selects suitable extraction, resolution, and training settings for the source and available VRAM.
 - **Transparent media**: Transparent MOV and PNG files retain their original color and Alpha while OOOSplat creates the black-and-white masks required by COLMAP.
 - **Multi-task workspace**: Group tasks into New Tasks, Completed, and Unfinished. Keep multiple drafts, reorder them, and automatically run the next task. Only one generation task runs at a time; tasks can be cancelled or resumed.
-- **Reshoots**: Choose incremental/full reconstruction and model refinement/retraining based on the original result. Supports mixed-size ordinary inputs and full ERP reshoots in a separate derived project.
+- **Reshoots**: Choose reconstruction mode and whether to reuse the original model, with the normal training recipe. Supports mixed-size ordinary inputs and full ERP reshoots in a separate derived project.
 - **Preview and editing**: Supports WebGPU/WebGL2, translation axes, rotation rings, cropping, deletion, inversion, undo, and redo. Use WASD for horizontal navigation or Auto locate view to return to the first training view.
 - **Multiple export formats**: Export standard PLY, compressed PLY, SPZ v4, bundled SOG, portrait or landscape MP4, and standalone offline HTML.
 - **Local processing**: COLMAP reconstruction and Brush training run on the user's computer, using GPU acceleration when available.
@@ -159,7 +159,7 @@ Sample media: [Download from Quark Drive](https://pan.quark.cn/s/1dde892a1324) t
 7. Follow the selected task's stages, progress, and logs on the left. Click any task on the right to switch details. Generated projects appear under Completed or Unfinished; completed projects offer Preview.
 8. Edit the model in “Preview → Adjust.” Transforms, crops, and deletions are saved automatically in the project; each project's view is stored locally on this device. “Save edits” confirms that the current edits and view have been saved. Choose standard PLY, compressed PLY, SPZ, or SOG directly from “Export,” with no second format confirmation. Both Adjust and Animation support model export.
 9. Switch to Animation, choose Portrait or Landscape, and use Export → Export video for a 30 FPS, 23-second MP4 at 1080×1920 or 1920×1080 respectively. Both Adjust and Animation can export offline HTML. Exports use the current edits, can be cancelled, and provide access to the output folder on completion.
-10. To add detail, choose Reshoot on a completed project. Select the new media and type, optionally adjust quality/Auto Optimize, then start generation to answer the model-condition question and confirm the plan. A slower fallback requires separate authorization. New and old views must overlap and show the same scene.
+10. To add detail, choose Reshoot on a completed project. Select the new media and type, optionally adjust quality/Auto Optimize, then answer the model-condition question. Ordinary inputs also ask whether capture settings are the same; there is no separate plan confirmation. Enabling Auto Optimize also allows a slower fallback if needed. New and old views must overlap and show the same scene.
 
 Usage notes:
 
@@ -168,7 +168,7 @@ Usage notes:
 - Drafts are saved locally and their media is rechecked after restart. Running-task parameters cannot be changed, but other drafts remain editable. A second task cannot run concurrently.
 - Drag new tasks to reorder them. Auto-run next task is off by default and never skips an unready task. Image-order questions pause startup; cancelling disables the queue.
 - New reshoots default to the source quality/Auto Optimize settings, editable before launch. Ordinary batches can differ in resolution, aspect ratio, device, and lens; full ERP batches can differ in size across batches. Original media cannot be submitted again. Missing trusted image/reconstruction snapshots prevent launch.
-- Refinement initializes from the unedited generated PLY with a new optimizer, training on both old and new views. It is not a full optimizer resume and does not freeze the old scene. The display transform is inherited, not deletion/crop edits. Existing legacy tasks keep their saved behavior. See the [reshoot recipe and validation notes](docs/RESHOOT_V2.md).
+- Reusing the original model initializes from the unedited generated PLY and trains on old and new views with the normal full recipe, without shortened steps or reduced learning rates. Original intrinsics are reused only after confirmation and compatible single-camera dimensions/orientation checks. This is not an optimizer resume or a guarantee that only new regions change; deletion/crop edits are not inherited. Existing tasks keep their saved settings. See the [reshoot validation notes](docs/RESHOOT_V2.md).
 - Task pages keep the latest 500 log entries; complete engine logs remain in the project's `logs/` directory. The training runtime monitor is hidden by default and can be enabled under Settings → Interface.
 - Delete moves the complete project, including source copies and intermediate files, to the Recycle Bin. OOOSplat does not fall back to permanent deletion if that operation fails.
 

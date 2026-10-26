@@ -83,8 +83,10 @@ export type ImageMatchingStrategy = "sequential" | "exhaustive";
 export interface ProjectionDetection { sourceIdentity?: string; unsupported?: boolean; confirmedErp: boolean; requiresChoice: boolean; supportedErp: boolean; reason: string; previewJpeg: number[]; }
 
 export type ReshootCondition = "good" | "appearance" | "geometry" | "unsure";
+export type ReshootCameraRelation = "same" | "different" | "unsure";
 export interface ReshootOptions {
   condition: ReshootCondition;
+  cameraRelation?: ReshootCameraRelation;
   allowFallback: boolean;
   sourceIdentity: string;
   inputIdentity: string;

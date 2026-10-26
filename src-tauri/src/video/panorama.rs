@@ -86,8 +86,14 @@ pub fn detect_metadata(
     // FFmpeg's 180-degree display rotation remains a full ERP; quarter turns do not.
     let rotated = video.rotation.rem_euclid(180) != 0;
     let ratio = video.width > 0 && video.width == video.height.saturating_mul(2);
-    let unsupported =
-        stereo || cropped || rotated || (!projection.is_empty() && projection != "equirectangular");
+    // A phone's display matrix is also normal perspective-video metadata.
+    // Quarter-turn restrictions apply only to spherical metadata or a 2:1
+    // MP4 candidate that could otherwise be selected as full ERP.
+    let rotated_panorama = rotated && (spherical.is_some() || (mp4 && ratio));
+    let unsupported = stereo
+        || cropped
+        || rotated_panorama
+        || (!projection.is_empty() && projection != "equirectangular");
     let supported_erp = mp4 && ratio && video.width >= 64 && !unsupported;
     let confirmed_erp = supported_erp && projection == "equirectangular";
     ProjectionDetection {
@@ -1867,6 +1873,107 @@ mod tests {
         vr["streams"][0]["tags"] = serde_json::json!({"projection":"VR180"});
         assert!(!detect_metadata(&vr, &info, true).supported_erp);
         assert!(!detect_metadata(&full, &info, false).confirmed_erp);
+    }
+
+    #[test]
+    fn ordinary_display_rotation_is_not_an_unsupported_panorama() {
+        for mp4 in [false, true] {
+            for rotation in [-270, -90, 0, 90, 180, 270] {
+                let video = VideoInfo {
+                    width: 1920,
+                    height: 1080,
+                    duration: 1.,
+                    fps: 30.,
+                    total_frames: 30,
+                    codec: "h264".into(),
+                    rotation,
+                    pixel_format: "yuv420p".into(),
+                    has_alpha: false,
+                };
+                let json = serde_json::json!({"streams":[{"width":1920,"height":1080,"side_data_list":[{"side_data_type":"Display Matrix","rotation":rotation}]}]});
+                let detection = detect_metadata(&json, &video, mp4);
+                assert!(!detection.unsupported, "rotation={rotation}, mp4={mp4}");
+                assert!(
+                    !detection.supported_erp
+                        && !detection.confirmed_erp
+                        && !detection.requires_choice
+                );
+                assert!(!resolve(VideoProjection::Auto, &detection).unwrap());
+                assert!(resolve(VideoProjection::Equirectangular, &detection).is_err());
+                let size = crate::video::prepared_video_dimensions(&video);
+                assert_eq!(
+                    size,
+                    if rotation.rem_euclid(180) == 90 {
+                        (1080, 1920)
+                    } else {
+                        (1920, 1080)
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rotated_ambiguous_or_explicit_panorama_stays_blocked_without_rejecting_perspective() {
+        let video = VideoInfo {
+            width: 2000,
+            height: 1000,
+            duration: 1.,
+            fps: 30.,
+            total_frames: 30,
+            codec: "h264".into(),
+            rotation: -90,
+            pixel_format: "yuv420p".into(),
+            has_alpha: false,
+        };
+        let unknown = serde_json::json!({"streams":[{"side_data_list":[{"side_data_type":"Display Matrix","rotation":-90}]}]});
+        let detection = detect_metadata(&unknown, &video, true);
+        assert!(detection.unsupported && detection.requires_choice);
+        assert!(!detection.supported_erp && !detection.confirmed_erp);
+        assert!(resolve(VideoProjection::Equirectangular, &detection).is_err());
+        assert!(!resolve(VideoProjection::Perspective, &detection).unwrap());
+        let spherical = serde_json::json!({"streams":[{"side_data_list":[{"side_data_type":"Spherical Mapping","projection":"equirectangular"}]}]});
+        for mp4 in [false, true] {
+            let detection = detect_metadata(&spherical, &video, mp4);
+            assert!(detection.unsupported && !detection.supported_erp && !detection.confirmed_erp);
+        }
+        let stereo = serde_json::json!({"streams":[{"side_data_list":[{"side_data_type":"Stereo 3D","type":"side by side"}]}]});
+        assert!(detect_metadata(&stereo, &video, false).unsupported);
+    }
+
+    #[tokio::test]
+    #[ignore = "Read-only IMG_8023.MOV regression; requires the local phone video and bundled FFprobe"]
+    async fn native_ordinary_rotated_mov_is_not_a_panorama_error() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let input = Path::new("E:/Download/LocalSend/IMG_8023.MOV");
+        let before = input.metadata().unwrap();
+        let (video, json) = crate::engines::ffprobe::probe_video_metadata(
+            &repo.join("engines/ffmpeg/ffprobe.exe"),
+            input,
+            None,
+            &ProcessManager::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (video.width, video.height, video.rotation),
+            (1920, 1080, -90)
+        );
+        let detection = detect_metadata(&json, &video, false);
+        assert!(
+            !detection.unsupported
+                && !detection.confirmed_erp
+                && !detection.requires_choice
+                && !detection.supported_erp
+        );
+        assert!(!resolve(VideoProjection::Auto, &detection).unwrap());
+        assert_eq!(
+            crate::video::prepared_video_dimensions(&video),
+            (1080, 1920)
+        );
+        let after = input.metadata().unwrap();
+        assert_eq!(before.len(), after.len());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
     }
     #[test]
     fn face_centers_cover_both_hemispheres_and_poles() {

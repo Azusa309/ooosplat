@@ -4,6 +4,223 @@ use crate::pipeline::reshoot::*;
 use crate::reconstruction::colmap_model::read_cameras;
 use crate::video::panorama::{self, VideoProjection};
 use sha2::{Digest, Sha256};
+use std::time::Duration;
+use tokio::io::AsyncWriteExt;
+
+/// Application-side work only. Engine processes keep their existing observers.
+/// Counts are log messages, never synthetic stage percentages or iterations.
+struct PreparationClock {
+    activity: Instant,
+    logged: Instant,
+    notice: Option<Instant>,
+}
+
+impl PreparationClock {
+    fn quiet_notice(&mut self, now: Instant) -> bool {
+        if now.duration_since(self.activity) < Duration::from_secs(15)
+            || self
+                .notice
+                .is_some_and(|last| now.duration_since(last) < Duration::from_secs(30))
+        {
+            return false;
+        }
+        self.notice = Some(now);
+        true
+    }
+}
+
+struct ReshootProgress {
+    events: EventSink,
+    stage: PipelineStage,
+    label: &'static str,
+    clock: Arc<std::sync::Mutex<PreparationClock>>,
+    cancel: tokio_util::sync::CancellationToken,
+    timer: tokio::task::JoinHandle<()>,
+}
+
+impl ReshootProgress {
+    fn new(
+        events: &EventSink,
+        stage: PipelineStage,
+        cancel: &tokio_util::sync::CancellationToken,
+        label: &'static str,
+        total: Option<u64>,
+    ) -> Self {
+        let mut scoped = events.clone();
+        scoped.bound_operation = events
+            .context
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .current
+            .clone();
+        let now = Instant::now();
+        let clock = Arc::new(std::sync::Mutex::new(PreparationClock {
+            activity: now,
+            logged: now,
+            notice: None,
+        }));
+        let timer_clock = clock.clone();
+        let timer_events = scoped.clone();
+        let timer_cancel = cancel.clone();
+        let timer = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                tokio::select! {
+                    _ = timer_cancel.cancelled() => break,
+                    _ = interval.tick() => {
+                        if timer_clock.lock().unwrap_or_else(|p| p.into_inner()).quiet_notice(Instant::now()) {
+                            reshoot_log(&timer_events, stage, "补拍处理仍在进行，当前步骤可能耗时较长，请耐心等待");
+                        }
+                    }
+                }
+            }
+        });
+        let value = Self {
+            events: scoped,
+            stage,
+            label,
+            clock,
+            cancel: cancel.clone(),
+            timer,
+        };
+        value.log(total.map_or_else(|| label.to_owned(), |n| format!("{label}：0/{n}")));
+        value
+    }
+
+    fn log(&self, message: String) {
+        if !self.cancel.is_cancelled() {
+            reshoot_log(&self.events, self.stage, message);
+        }
+    }
+
+    fn update(&self, current: u64, total: u64) {
+        let now = Instant::now();
+        let mut clock = self.clock.lock().unwrap_or_else(|p| p.into_inner());
+        clock.activity = now;
+        clock.notice = None;
+        let log = current == total || now.duration_since(clock.logged) >= Duration::from_secs(1);
+        if log {
+            clock.logged = now;
+        }
+        drop(clock);
+        if log {
+            self.log(format!("{}：{current}/{total}", self.label));
+        }
+    }
+}
+
+impl Drop for ReshootProgress {
+    fn drop(&mut self) {
+        self.timer.abort();
+    }
+}
+
+async fn copy_reshoot_file(
+    source: &Path,
+    target: &Path,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<()> {
+    let mut input = tokio::fs::File::open(source).await?;
+    let mut output = tokio::fs::File::create(target).await?;
+    let mut buffer = vec![0; 256 * 1024];
+    loop {
+        if cancel.is_cancelled() {
+            return Err(SplatError::Cancelled);
+        }
+        let count = input.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        output.write_all(&buffer[..count]).await?;
+    }
+    output.flush().await?;
+    Ok(())
+}
+
+fn reshoot_log(events: &EventSink, stage: PipelineStage, message: impl Into<String>) {
+    let _dispatch = events.dispatch.lock().unwrap_or_else(|p| p.into_inner());
+    let context = events.context.lock().unwrap_or_else(|p| p.into_inner());
+    if events
+        .bound_operation
+        .as_ref()
+        .is_some_and(|op| context.current.as_ref().map(|active| active.id) != Some(op.id))
+    {
+        return;
+    }
+    (events.emit)(PipelineEvent {
+        operation: context.current.clone(),
+        task_id: None,
+        run_id: None,
+        revision: 0,
+        sequence: events.sequence.fetch_add(1, Ordering::Relaxed) + 1,
+        timestamp: Utc::now(),
+        kind: EventKind::Log,
+        level: EventLevel::Info,
+        stage: context.stage.unwrap_or(stage),
+        substage: context.substage.clone(),
+        engine: Some(PipelineEngine::System),
+        progress: events.last_progress_milli_percent.load(Ordering::Relaxed) as f32 / 1000.,
+        stage_progress: None,
+        indeterminate: true,
+        message: message.into(),
+        current: None,
+        total: None,
+        unit: None,
+        elapsed_ms: events.started.elapsed().as_millis() as u64,
+        acceleration: None,
+        runtime: None,
+    });
+}
+
+fn reusable_camera(
+    relation: Option<CameraRelation>,
+    cameras: &[ColmapCamera],
+    images: &[(u32, u32, u8)],
+) -> Option<u32> {
+    if relation != Some(CameraRelation::Same) || cameras.len() != 1 || images.is_empty() {
+        return None;
+    }
+    let camera = &cameras[0];
+    (camera.model_id != 17
+        && camera.width > 0
+        && camera.height > 0
+        && camera.params.first().is_some_and(|v| *v > 0.)
+        && camera.params.iter().all(|v| v.is_finite())
+        && images.iter().all(|&(w, h, orientation)| {
+            (w as u64, h as u64, orientation) == (camera.width, camera.height, 1)
+        }))
+    .then_some(camera.id)
+}
+
+fn normal_training_preset(
+    quality: Quality,
+    automatic: bool,
+    memory: Option<u64>,
+    long_edge: u32,
+    face_size: Option<u32>,
+    initial_points: u64,
+    resolution: Option<crate::presets::PlannerResolutionPlan>,
+) -> Result<ResolvedBrushTrainingPreset> {
+    if let Some(face_size) = face_size {
+        resolve_panorama_training_preset(quality, automatic, memory, face_size, initial_points)
+    } else if let Some(resolution) = resolution.filter(|_| automatic) {
+        Ok(resolve_brush_training_preset_for_plan(
+            quality,
+            memory,
+            long_edge,
+            initial_points,
+            &resolution,
+        ))
+    } else {
+        Ok(resolve_brush_training_preset(
+            quality,
+            automatic,
+            memory,
+            long_edge,
+            initial_points,
+        ))
+    }
+}
 
 fn changed() -> SplatError {
     SplatError::Process("素材文件已发生变化，请重新分析后再生成".into())
@@ -430,6 +647,8 @@ impl PipelineRunner {
         state.reshoot = Some(ReshootState {
             recipe: Some(ReshootRecipe {
                 version: RECIPE_VERSION,
+                normal_parameters_version: Some(1),
+                camera_assignment: None,
                 options,
                 initial: plan,
                 actual: plan,
@@ -510,8 +729,11 @@ fn ensure_masks(
     images: &Path,
     masks: &Path,
     cancel: &tokio_util::sync::CancellationToken,
+    progress: Option<&ReshootProgress>,
 ) -> Result<()> {
-    for image in crate::video::list_images(images)? {
+    let images = crate::video::list_images(images)?;
+    let total = images.len() as u64;
+    for (index, image) in images.iter().enumerate() {
         if cancel.is_cancelled() {
             return Err(SplatError::Cancelled);
         }
@@ -519,7 +741,7 @@ fn ensure_masks(
             "{}.png",
             image.file_name().unwrap().to_string_lossy()
         ));
-        let header = crate::video::image_projection::inspect(&image)?;
+        let header = crate::video::image_projection::inspect(image)?;
         if mask.exists() {
             if image::image_dimensions(&mask).map_err(|e| invalid(&e.to_string()))?
                 != (header.width, header.height)
@@ -533,6 +755,9 @@ fn ensure_masks(
             image::GrayImage::from_pixel(header.width, header.height, image::Luma([255]))
                 .save(mask)
                 .map_err(|e| invalid(&e.to_string()))?;
+        }
+        if let Some(progress) = progress {
+            progress.update(index as u64 + 1, total);
         }
     }
     Ok(())
@@ -664,7 +889,13 @@ impl PipelineRunner {
             .recipe
             .clone()
             .ok_or_else(|| invalid("Missing reshoot recipe"))?;
-        if recipe.version != RECIPE_VERSION {
+        if recipe.version != RECIPE_VERSION
+            || recipe.normal_parameters_version.is_some_and(|v| v != 1)
+            || recipe
+                .camera_assignment
+                .as_ref()
+                .is_some_and(|v| v.version != 1)
+        {
             return Err(invalid("Unsupported reshoot recipe"));
         }
         let provenance = metadata
@@ -698,17 +929,38 @@ impl PipelineRunner {
             reset_directory(&paths.colmap_frames).await?;
             reset_directory(&paths.masks).await?;
             reset_directory(&paths.colmap).await?;
-            copy_image_files(&source.images, &paths.frames).await?;
-            copy_image_files(&source.colmap_images, &paths.colmap_frames).await?;
-            if source.masks.is_dir() {
-                copy_image_files(&source.masks, &paths.masks).await?;
+            let mut files = Vec::new();
+            for (from, to) in [
+                (&source.images, &paths.frames),
+                (&source.colmap_images, &paths.colmap_frames),
+                (&source.masks, &paths.masks),
+            ] {
+                if from.is_dir() {
+                    for file in crate::video::list_images(from)? {
+                        let target = to.join(file.file_name().unwrap());
+                        files.push((file, target));
+                    }
+                }
             }
-            tokio::fs::copy(&source.database, &database).await?;
-            sync_refined_cameras(&database, &source.model)?;
+            files.push((source.database.clone(), database.clone()));
             tokio::fs::create_dir_all(&base).await?;
             for file in reusable_model_files(&source.model)? {
-                tokio::fs::copy(&file, base.join(file.file_name().unwrap())).await?;
+                let target = base.join(file.file_name().unwrap());
+                files.push((file, target));
             }
+            let progress = ReshootProgress::new(
+                &self.events,
+                PipelineStage::ExtractingFrames,
+                &cancel,
+                "正在准备原项目文件",
+                Some(files.len() as u64),
+            );
+            for (index, (from, to)) in files.iter().enumerate() {
+                copy_reshoot_file(from, to, &cancel).await?;
+                progress.update(index as u64 + 1, files.len() as u64);
+            }
+            drop(progress);
+            sync_refined_cameras(&database, &source.model)?;
             recipe.source_names = crate::video::list_images(&paths.frames)?
                 .into_iter()
                 .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
@@ -720,6 +972,12 @@ impl PipelineRunner {
             checkpoint.colmap_input_version = Some(COLMAP_INPUT_VERSION);
             checkpoint.source_snapshot_complete = true;
             save_recipe(manager, paths, &mut state, &checkpoint, &recipe).await?;
+        } else {
+            reshoot_log(
+                &self.events,
+                PipelineStage::ExtractingFrames,
+                "复用已完成的补拍缓存：原项目文件",
+            );
         }
         if !checkpoint.supplemental_frames_complete {
             self.events
@@ -750,6 +1008,13 @@ impl PipelineRunner {
             }
             let mut batch_records = Vec::new();
             if metadata.input_type == ProjectInputType::Images && is_panorama {
+                let progress = ReshootProgress::new(
+                    &self.events,
+                    PipelineStage::ExtractingFrames,
+                    &cancel,
+                    "正在准备补拍画面",
+                    None,
+                );
                 let config = crate::video::image_projection::checkpoint(
                     &metadata.source_path,
                     metadata.quality,
@@ -763,6 +1028,7 @@ impl PipelineRunner {
                     &stage_masks,
                     &cancel,
                     |current, total| {
+                        progress.update(current, total);
                         self.events.send(
                             PipelineStage::ExtractingFrames,
                             Some(PipelineEngine::System),
@@ -800,6 +1066,14 @@ impl PipelineRunner {
                 let stage_colmap = stage_colmap.clone();
                 let stage_masks = stage_masks.clone();
                 let cancel = cancel.clone();
+                let total = crate::video::list_images(&input)?.len() as u64;
+                let progress = ReshootProgress::new(
+                    &self.events,
+                    PipelineStage::ExtractingFrames,
+                    &cancel,
+                    "正在准备补拍画面",
+                    Some(total),
+                );
                 crate::presets::spawn_pipeline_blocking(move || -> Result<()> {
                     for (index, image) in crate::video::list_images(&input)?.iter().enumerate() {
                         normalize_image(
@@ -813,6 +1087,7 @@ impl PipelineRunner {
                             ),
                             &cancel,
                         )?;
+                        progress.update(index as u64 + 1, total);
                     }
                     Ok(())
                 })
@@ -836,7 +1111,22 @@ impl PipelineRunner {
                 } else {
                     None
                 };
-                let dimensions = config.as_ref().map(|c| (c.sfm_width, c.sfm_height));
+                let dimensions = config
+                    .as_ref()
+                    .map(|c| (c.sfm_width, c.sfm_height))
+                    .or_else(|| {
+                        (recipe.uses_normal_parameters() && state.planner_enabled).then(|| {
+                            let (w, h) = oriented_video_dimensions(&video);
+                            let plan = resolve_planner_resolution_plan(
+                                metadata.quality,
+                                acceleration.usable_gpu_total_memory_mb(),
+                                w,
+                                h,
+                                true,
+                            );
+                            (plan.working_width, plan.working_height)
+                        })
+                    });
                 let prepared = self
                     .prepare_frames(
                         &metadata.source_path,
@@ -893,10 +1183,15 @@ impl PipelineRunner {
                 }
             }
             recipe.new_names.clear();
-            for (index, image) in crate::video::list_images(&stage_frames)?
-                .into_iter()
-                .enumerate()
-            {
+            let prepared_images = crate::video::list_images(&stage_frames)?;
+            let progress = ReshootProgress::new(
+                &self.events,
+                PipelineStage::ExtractingFrames,
+                &cancel,
+                "正在整理补拍画面",
+                Some(prepared_images.len() as u64),
+            );
+            for (index, image) in prepared_images.iter().enumerate() {
                 let old = image.file_name().unwrap().to_string_lossy().into_owned();
                 let name = format!(
                     "{prefix}{index:010}.{}",
@@ -906,11 +1201,12 @@ impl PipelineRunner {
                     (&stage_frames, &paths.frames),
                     (&stage_colmap, &paths.colmap_frames),
                 ] {
-                    tokio::fs::copy(from.join(&old), to.join(&name)).await?;
+                    copy_reshoot_file(&from.join(&old), &to.join(&name), &cancel).await?;
                 }
                 let mask = stage_masks.join(format!("{old}.png"));
                 if mask.is_file() {
-                    tokio::fs::copy(mask, paths.masks.join(format!("{name}.png"))).await?;
+                    copy_reshoot_file(&mask, &paths.masks.join(format!("{name}.png")), &cancel)
+                        .await?;
                 }
                 if let Some(mut record) = batch_records
                     .iter()
@@ -921,12 +1217,21 @@ impl PipelineRunner {
                     recipe.panorama_frames.push(record);
                 }
                 recipe.new_names.push(name);
+                progress.update(index as u64 + 1, prepared_images.len() as u64);
             }
+            drop(progress);
             let images = paths.colmap_frames.clone();
             let masks = paths.masks.clone();
             let mask_cancel = cancel.clone();
+            let progress = ReshootProgress::new(
+                &self.events,
+                PipelineStage::ExtractingFrames,
+                &cancel,
+                "正在检查画面与蒙版",
+                Some(recipe.source_names.len() as u64 + recipe.new_names.len() as u64),
+            );
             crate::presets::spawn_pipeline_blocking(move || {
-                ensure_masks(&images, &masks, &mask_cancel)
+                ensure_masks(&images, &masks, &mask_cancel, Some(&progress))
             })
             .await
             .map_err(|e| invalid(&format!("Mask preparation worker: {e}")))??;
@@ -943,6 +1248,95 @@ impl PipelineRunner {
                 ..Default::default()
             });
             save_recipe(manager, paths, &mut state, &checkpoint, &recipe).await?;
+            reshoot_log(
+                &self.events,
+                PipelineStage::ExtractingFrames,
+                format!(
+                    "补拍画面准备完成：原画面 {} 张，新增 {} 张",
+                    checkpoint.source_image_count, checkpoint.reshoot_frame_count
+                ),
+            );
+        } else {
+            reshoot_log(
+                &self.events,
+                PipelineStage::ExtractingFrames,
+                "复用已完成的补拍缓存：补拍画面",
+            );
+        }
+        if recipe.uses_normal_parameters() && recipe.camera_assignment.is_none() {
+            let headers = recipe
+                .new_names
+                .iter()
+                .chain(&recipe.source_names)
+                .map(|name| {
+                    let image =
+                        crate::video::image_projection::inspect(&paths.colmap_frames.join(name))?;
+                    Ok((image.width, image.height, image.orientation))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            recipe.camera_assignment = Some(CameraAssignment {
+                version: 1,
+                reused_camera_id: if is_panorama {
+                    None
+                } else {
+                    // Be conservative even if only one of multiple source
+                    // camera groups survived into the registered model.
+                    let source_db = rusqlite::Connection::open_with_flags(
+                        &database,
+                        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                    )
+                    .map_err(|e| invalid(&e.to_string()))?;
+                    let count: u64 = source_db
+                        .query_row("SELECT COUNT(*) FROM cameras", [], |row| row.get(0))
+                        .map_err(|e| invalid(&e.to_string()))?;
+                    if count == 1 {
+                        reusable_camera(
+                            recipe.options.camera_relation,
+                            &read_cameras(&base)?,
+                            &headers,
+                        )
+                    } else {
+                        None
+                    }
+                },
+            });
+            save_recipe(manager, paths, &mut state, &checkpoint, &recipe).await?;
+        }
+        let reused_camera_id = recipe
+            .camera_assignment
+            .as_ref()
+            .and_then(|v| v.reused_camera_id);
+        reshoot_log(
+            &self.events,
+            PipelineStage::ExtractingFeatures,
+            if reused_camera_id.is_some() {
+                "补拍相机设置：沿用原设置"
+            } else if recipe.options.camera_relation == Some(CameraRelation::Same) && !is_panorama {
+                "补拍相机设置：条件不兼容，独立处理"
+            } else {
+                "补拍相机设置：独立处理"
+            },
+        );
+        if recipe.uses_normal_parameters()
+            && !is_panorama
+            && state.planner_enabled
+            && state.resolution_plan.is_none()
+        {
+            let mut largest: (u32, u32) = (1, 1);
+            for name in recipe.source_names.iter().chain(&recipe.new_names) {
+                let header = crate::video::image_projection::inspect(&paths.frames.join(name))?;
+                if header.width.max(header.height) > largest.0.max(largest.1) {
+                    largest = (header.width, header.height);
+                }
+            }
+            state.resolution_plan = Some(resolve_planner_resolution_plan(
+                metadata.quality,
+                acceleration.usable_gpu_total_memory_mb(),
+                largest.0,
+                largest.1,
+                metadata.input_type == ProjectInputType::Video,
+            ));
+            save_recipe(manager, paths, &mut state, &checkpoint, &recipe).await?;
         }
         let sfm = metadata.quality.preset();
         if !checkpoint.supplemental_features_complete {
@@ -954,12 +1348,14 @@ impl PipelineRunner {
             // Reset to the immutable base database: interrupted groups must not receive different IDs on resume.
             tokio::fs::copy(&source.database, &database).await?;
             sync_refined_cameras(&database, &base)?;
-            let groups: Vec<Vec<String>> =
-                if metadata.input_type == ProjectInputType::Video || is_panorama {
-                    vec![recipe.new_names.clone()]
-                } else {
-                    recipe.new_names.iter().map(|n| vec![n.clone()]).collect()
-                };
+            let groups: Vec<Vec<String>> = if metadata.input_type == ProjectInputType::Video
+                || is_panorama
+                || reused_camera_id.is_some()
+            {
+                vec![recipe.new_names.clone()]
+            } else {
+                recipe.new_names.iter().map(|n| vec![n.clone()]).collect()
+            };
             for (index, group) in groups.iter().enumerate() {
                 if cancel.is_cancelled() {
                     return Err(SplatError::Cancelled);
@@ -982,8 +1378,11 @@ impl PipelineRunner {
                         list: &list,
                         masks: Some(&paths.masks),
                         panorama_dimensions: dims,
+                        existing_camera_id: reused_camera_id,
                         max_size: if state.planner_enabled {
-                            sfm.planned_sfm_max_image_size
+                            state
+                                .resolution_plan
+                                .map_or(sfm.planned_sfm_max_image_size, |p| p.sfm_max_image_size)
                         } else {
                             sfm.sfm_max_image_size
                         },
@@ -1007,6 +1406,12 @@ impl PipelineRunner {
             }
             checkpoint.supplemental_features_complete = true;
             save_recipe(manager, paths, &mut state, &checkpoint, &recipe).await?;
+        } else {
+            reshoot_log(
+                &self.events,
+                PipelineStage::ExtractingFeatures,
+                "复用已完成的补拍缓存：特征提取",
+            );
         }
         self.reshoot_matching(
             paths,
@@ -1124,9 +1529,21 @@ impl PipelineRunner {
             break model;
         };
         let report = ReconstructionValidator::validate(&paths.frames, &model)?;
+        reshoot_log(
+            &self.events,
+            PipelineStage::Reconstructing,
+            format!(
+                "补拍画面已加入：{}/{}",
+                checkpoint.registered_reshoot_count, checkpoint.reshoot_frame_count
+            ),
+        );
         // The published sparse model contains refined new intrinsics. Record
         // them in this derived project's DB, never in the source project's DB.
         sync_refined_cameras(&database, &model)?;
+        if !is_panorama {
+            self.events
+                .stage(PipelineStage::TrainingSplats, 0., "正在准备训练图片");
+        }
         let dataset = if is_panorama {
             self.events.panorama_phase.store(2, Ordering::Relaxed);
             self.events
@@ -1177,6 +1594,13 @@ impl PipelineRunner {
         } else {
             let dataset = paths.brush.join("dataset");
             if !state.brush_complete {
+                let _progress = ReshootProgress::new(
+                    &self.events,
+                    PipelineStage::TrainingSplats,
+                    &cancel,
+                    "正在准备训练图片",
+                    None,
+                );
                 reset_directory(&dataset).await?;
                 prepare_brush_dataset(&paths.brush, &paths.frames, &model).await?
             } else {
@@ -1198,7 +1622,19 @@ impl PipelineRunner {
             tokio::fs::create_dir_all(&attempt.logs).await?;
             if state.brush_complete {
                 if let Some(candidate) = brush_candidate(&attempt.brush) {
+                    let _progress = ReshootProgress::new(
+                        &self.events,
+                        PipelineStage::TrainingSplats,
+                        &cancel,
+                        "正在校验并发布 final.ply",
+                        None,
+                    );
                     validate_ply(&candidate, &cancel).await?;
+                    reshoot_log(
+                        &self.events,
+                        PipelineStage::TrainingSplats,
+                        "复用已完成的补拍缓存：Splat 训练",
+                    );
                     break candidate;
                 }
                 state.brush_complete = false;
@@ -1217,31 +1653,22 @@ impl PipelineRunner {
                 Quality::Balanced => 768,
                 Quality::High => 1024,
             };
-            let mut resolved = state.brush_training.resolved.unwrap_or(if is_panorama {
-                resolve_panorama_training_preset(
-                    metadata.quality,
-                    state.planner_enabled,
-                    policy.known_training_memory_mb(acceleration),
-                    face_size,
-                    report.points_3d,
-                )?
-            } else {
-                resolve_brush_training_preset(
-                    metadata.quality,
-                    state.planner_enabled,
-                    acceleration.usable_gpu_total_memory_mb(),
-                    max_edge,
-                    report.points_3d,
-                )
-            });
             let mut initial_points = report.points_3d;
+            let mut initial_sh = 3;
             if recipe.actual.training == TrainingMode::Warm {
+                let _progress = ReshootProgress::new(
+                    &self.events,
+                    PipelineStage::TrainingSplats,
+                    &cancel,
+                    "正在准备原模型训练副本",
+                    None,
+                );
                 let init = dataset.join("init.ply");
                 let model = provenance.source_final_ply.clone();
                 let (_, _, original_hash) = validate_ply(&model, &cancel).await?;
                 if !init.is_file() || recipe.init_sha256.as_deref() != Some(&original_hash) {
                     let pending = dataset.join("init.ply.partial");
-                    tokio::fs::copy(&model, &pending).await?;
+                    copy_reshoot_file(&model, &pending, &cancel).await?;
                     let (_, _, snapshot_hash) = validate_ply(&pending, &cancel).await?;
                     if snapshot_hash != original_hash {
                         return Err(changed());
@@ -1251,11 +1678,48 @@ impl PipelineRunner {
                 }
                 let (info, sh, _) = validate_ply(&init, &cancel).await?;
                 initial_points = info.splat_count;
+                initial_sh = sh;
                 if is_panorama && initial_points > crate::presets::MAX_PANORAMA_SPLATS as u64 {
                     return Err(invalid(
                         "初始化点数超出当前全景训练预算，已停止训练以避免丢弃初始点。",
                     ));
                 }
+            } else {
+                let init = dataset.join("init.ply");
+                if init.is_file() {
+                    tokio::fs::rename(init, dataset.join("init.previous")).await?;
+                }
+                recipe.warm_parameters = None;
+            }
+            // Resolve after validating initialization, using the normal budget
+            // protection. Existing jobs retain their saved warm-start recipe.
+            let budget_points = if recipe.uses_normal_parameters() {
+                initial_points
+            } else {
+                report.points_3d
+            };
+            let mut resolved = if let Some(saved) = state.brush_training.resolved {
+                saved
+            } else {
+                normal_training_preset(
+                    metadata.quality,
+                    state.planner_enabled,
+                    if is_panorama {
+                        policy.known_training_memory_mb(acceleration)
+                    } else {
+                        acceleration.usable_gpu_total_memory_mb()
+                    },
+                    max_edge,
+                    is_panorama.then_some(face_size),
+                    budget_points,
+                    state
+                        .resolution_plan
+                        .filter(|_| recipe.uses_normal_parameters()),
+                )?
+            };
+            if recipe.uses_normal_parameters() {
+                recipe.warm_parameters = None;
+            } else if recipe.actual.training == TrainingMode::Warm {
                 let views = read_registered_images(&dataset.join("sparse/0"))?.len() as u64;
                 if recipe.warm_parameters.is_none() {
                     let (preset, warm) = warm_training(
@@ -1263,7 +1727,7 @@ impl PipelineRunner {
                         metadata.quality,
                         views,
                         initial_points,
-                        sh,
+                        initial_sh,
                     )?;
                     resolved.preset = preset;
                     recipe.warm_parameters = Some(warm);
@@ -1277,12 +1741,6 @@ impl PipelineRunner {
                             .memory_max_splats
                             .is_some_and(|cap| initial_points > cap as u64);
                 }
-            } else {
-                let init = dataset.join("init.ply");
-                if init.is_file() {
-                    tokio::fs::rename(init, dataset.join("init.previous")).await?;
-                }
-                recipe.warm_parameters = None;
             }
             state.brush_training.resolved = Some(resolved);
             save_recipe(manager, paths, &mut state, &checkpoint, &recipe).await?;
@@ -1325,7 +1783,17 @@ impl PipelineRunner {
                     })
                 }
             };
-            match validate_ply(&candidate, &cancel).await {
+            let validation = {
+                let _progress = ReshootProgress::new(
+                    &self.events,
+                    PipelineStage::TrainingSplats,
+                    &cancel,
+                    "正在校验并发布 final.ply",
+                    None,
+                );
+                validate_ply(&candidate, &cancel).await
+            };
+            match validation {
                 Ok(_) => {
                     state.brush_complete = true;
                     save_recipe(manager, paths, &mut state, &checkpoint, &recipe).await?;
@@ -1374,6 +1842,11 @@ impl PipelineRunner {
             .is_some_and(|s| s.incremental_matching_complete)
             && !expanded
         {
+            reshoot_log(
+                &self.events,
+                PipelineStage::Matching,
+                "复用已完成的补拍缓存：图像匹配",
+            );
             return Ok(());
         }
         self.events
@@ -1543,6 +2016,8 @@ impl PipelineRunner {
         report: &ReconstructionReport,
         candidate: &Path,
     ) -> Result<PipelineResult> {
+        self.events
+            .stage(PipelineStage::Exporting, 0., "正在校验并发布 final.ply");
         let ply = inspect_gaussian_ply(candidate)?;
         let final_ply = paths.project.join("final.ply");
         atomic_replace_file(candidate, &final_ply).await?;
@@ -1581,6 +2056,11 @@ impl PipelineRunner {
                 checkpoint.registered_reshoot_count, checkpoint.reshoot_frame_count
             )
         });
+        self.events.stage(
+            PipelineStage::Exporting,
+            1.,
+            format!("已发布 {} 个 Splat", ply.splat_count),
+        );
         self.events
             .stage(PipelineStage::Completed, 1., "高清补拍处理完成");
         Ok(PipelineResult {
@@ -1652,6 +2132,377 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reshoot_preparation_quiet_notice_is_bounded_and_resets_on_activity() {
+        let now = Instant::now();
+        let mut clock = PreparationClock {
+            activity: now,
+            logged: now,
+            notice: None,
+        };
+        assert!(!clock.quiet_notice(now + Duration::from_secs(14)));
+        assert!(clock.quiet_notice(now + Duration::from_secs(15)));
+        assert!(!clock.quiet_notice(now + Duration::from_secs(44)));
+        assert!(clock.quiet_notice(now + Duration::from_secs(45)));
+        clock.activity = now + Duration::from_secs(46);
+        clock.notice = None;
+        assert!(!clock.quiet_notice(now + Duration::from_secs(60)));
+        assert!(clock.quiet_notice(now + Duration::from_secs(61)));
+    }
+
+    #[test]
+    fn reshoot_camera_reuse_requires_explicit_confirmation_and_compatible_pixels() {
+        let camera = ColmapCamera {
+            id: 7,
+            model_id: 2,
+            model: "SIMPLE_RADIAL".into(),
+            width: 1920,
+            height: 1080,
+            params: vec![1500., 960., 540., 0.],
+        };
+        let frames = [(1920, 1080, 1), (1920, 1080, 1)];
+        assert_eq!(
+            reusable_camera(
+                Some(CameraRelation::Same),
+                std::slice::from_ref(&camera),
+                &frames
+            ),
+            Some(7)
+        );
+        for relation in [
+            None,
+            Some(CameraRelation::Different),
+            Some(CameraRelation::Unsure),
+        ] {
+            assert_eq!(
+                reusable_camera(relation, std::slice::from_ref(&camera), &frames),
+                None
+            );
+        }
+        for frames in [
+            vec![],
+            vec![(1080, 1920, 1)],
+            vec![(1920, 1080, 3)],
+            vec![(1920, 1080, 1), (1280, 720, 1)],
+        ] {
+            assert_eq!(
+                reusable_camera(
+                    Some(CameraRelation::Same),
+                    std::slice::from_ref(&camera),
+                    &frames
+                ),
+                None
+            );
+        }
+        assert_eq!(
+            reusable_camera(
+                Some(CameraRelation::Same),
+                &[camera.clone(), camera.clone()],
+                &frames
+            ),
+            None
+        );
+        for invalid in [
+            ColmapCamera {
+                model_id: 17,
+                ..camera.clone()
+            },
+            ColmapCamera {
+                params: vec![f64::NAN],
+                ..camera.clone()
+            },
+            ColmapCamera {
+                params: vec![0.],
+                ..camera
+            },
+        ] {
+            assert_eq!(
+                reusable_camera(Some(CameraRelation::Same), &[invalid], &frames),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn reshoot_normal_parameters_match_generation_for_every_quality_and_memory_tier() {
+        for quality in [Quality::Fast, Quality::Balanced, Quality::High] {
+            for automatic in [false, true] {
+                for memory in [
+                    None,
+                    Some(4096),
+                    Some(8192),
+                    Some(12288),
+                    Some(16384),
+                    Some(24576),
+                ] {
+                    for points in [10_192, 5_000_001] {
+                        let plan =
+                            resolve_planner_resolution_plan(quality, memory, 3840, 2160, true);
+                        let actual = normal_training_preset(
+                            quality,
+                            automatic,
+                            memory,
+                            3840,
+                            None,
+                            points,
+                            Some(plan),
+                        )
+                        .unwrap();
+                        let expected = if automatic {
+                            resolve_brush_training_preset_for_plan(
+                                quality, memory, 3840, points, &plan,
+                            )
+                        } else {
+                            resolve_brush_training_preset(quality, false, memory, 3840, points)
+                        };
+                        assert_eq!(actual, expected);
+                        if !automatic {
+                            assert_eq!(actual.preset.max_splats, None);
+                        }
+                        let actual = normal_training_preset(
+                            quality,
+                            automatic,
+                            memory,
+                            3840,
+                            Some(512),
+                            points,
+                            None,
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            actual,
+                            resolve_panorama_training_preset(
+                                quality, automatic, memory, 512, points
+                            )
+                            .unwrap()
+                        );
+                        assert!(actual.preset.max_splats.unwrap() as u64 >= points);
+                    }
+                }
+            }
+        }
+        assert!(normal_training_preset(
+            Quality::High,
+            true,
+            Some(24576),
+            4096,
+            Some(1024),
+            10_000_001,
+            None
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn reshoot_application_logs_never_advance_progress_and_ignore_old_operations() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let output = events.clone();
+        let runner = PipelineRunner::new_with_planner(
+            EnginePaths::from_root(PathBuf::from("unused-engines")),
+            true,
+            move |event| output.lock().unwrap().push(event),
+        );
+        runner
+            .events
+            .stage(PipelineStage::ExtractingFrames, 0., "prepare");
+        let before = runner
+            .events
+            .last_progress_milli_percent
+            .load(Ordering::Relaxed);
+        let token = runner.process_manager.child_token();
+        let progress = ReshootProgress::new(
+            &runner.events,
+            PipelineStage::ExtractingFrames,
+            &token,
+            "正在整理补拍画面",
+            Some(100),
+        );
+        for count in 1..=100 {
+            progress.update(count, 100);
+        }
+        assert_eq!(
+            runner
+                .events
+                .last_progress_milli_percent
+                .load(Ordering::Relaxed),
+            before
+        );
+        let captured = events.lock().unwrap().clone();
+        let logs: Vec<_> = captured
+            .iter()
+            .filter(|e| e.kind == EventKind::Log)
+            .collect();
+        assert_eq!(logs.len(), 2);
+        assert!(logs[0].message.ends_with("0/100"));
+        assert!(logs[1].message.ends_with("100/100"));
+        assert!(logs
+            .iter()
+            .all(|e| e.stage_progress.is_none() && e.current.is_none()));
+        runner
+            .events
+            .stage(PipelineStage::ExtractingFeatures, 0., "features");
+        let count = events.lock().unwrap().len();
+        progress.log("late".into());
+        assert_eq!(events.lock().unwrap().len(), count);
+        token.cancel();
+        progress.update(100, 100);
+        assert_eq!(events.lock().unwrap().len(), count);
+    }
+
+    #[tokio::test]
+    async fn reshoot_cancellable_copy_preserves_source_and_uncommitted_cache() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let target = root.path().join("cache");
+        let data = vec![27; 600_000];
+        tokio::fs::write(&source, &data).await.unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        copy_reshoot_file(&source, &target, &cancel).await.unwrap();
+        assert_eq!(tokio::fs::read(&target).await.unwrap(), data);
+        cancel.cancel();
+        assert!(matches!(
+            copy_reshoot_file(&source, &root.path().join("partial"), &cancel).await,
+            Err(SplatError::Cancelled)
+        ));
+        assert_eq!(tokio::fs::read(&source).await.unwrap(), data);
+        assert_eq!(tokio::fs::read(&target).await.unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn reshoot_publication_logs_actual_count_only_after_successful_validation_and_commit() {
+        for failure in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let input = root.path().join("input");
+            std::fs::create_dir(&input).unwrap();
+            for name in ["a.png", "b.png"] {
+                image::RgbImage::new(16, 16).save(input.join(name)).unwrap();
+            }
+            let manager = ProjectManager::for_diagnostics(root.path().join("projects"));
+            let token = tokio_util::sync::CancellationToken::new();
+            let (paths, mut metadata) = manager
+                .create_reshoot_v2(&input, Quality::Fast, token)
+                .await
+                .unwrap();
+            let mut state = manager.read_state(&paths.state).await.unwrap();
+            let candidate = paths.work.join("candidate.ply");
+            let mut valid = b"ply\nformat binary_little_endian 1.0\nelement vertex 23\n".to_vec();
+            for name in [
+                "x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1",
+                "scale_2", "rot_0", "rot_1", "rot_2", "rot_3",
+            ] {
+                valid.extend_from_slice(format!("property float {name}\n").as_bytes());
+            }
+            valid.extend_from_slice(b"end_header\n");
+            for _ in 0..23 {
+                for value in [
+                    0_f32, 0., 1., 0.1, 0.1, 0.1, 0., -3., -3., -3., 1., 0., 0., 0.,
+                ] {
+                    valid.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+            tokio::fs::write(
+                &candidate,
+                if failure {
+                    b"invalid".as_slice()
+                } else {
+                    valid.as_slice()
+                },
+            )
+            .await
+            .unwrap();
+            if !failure {
+                assert_eq!(
+                    validate_ply(&candidate, &tokio_util::sync::CancellationToken::new())
+                        .await
+                        .unwrap()
+                        .0
+                        .splat_count,
+                    23
+                );
+            }
+            let final_ply = paths.project.join("final.ply");
+            tokio::fs::write(&final_ply, b"previous result")
+                .await
+                .unwrap();
+            let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let output = events.clone();
+            let runner = PipelineRunner::new_with_planner(
+                EnginePaths::from_root(root.path().join("engines")),
+                true,
+                move |event| output.lock().unwrap().push(event),
+            );
+            let report = ReconstructionReport {
+                input_images: 4,
+                registered_images: 4,
+                registered_ratio: 1.,
+                points_3d: 100,
+                quality: crate::reconstruction::validator::ReconstructionQuality::Good,
+            };
+            let checkpoint = ReshootState {
+                reshoot_frame_count: 2,
+                registered_reshoot_count: 2,
+                ..Default::default()
+            };
+            let result = runner
+                .publish_reshoot_v2(
+                    &manager,
+                    &paths,
+                    &mut metadata,
+                    &mut state,
+                    &checkpoint,
+                    &report,
+                    &candidate,
+                )
+                .await;
+            let captured = events.lock().unwrap().clone();
+            assert_eq!(captured[0].stage, PipelineStage::Exporting);
+            if failure {
+                assert!(result.is_err());
+                assert!(captured.iter().all(
+                    |e| !e.message.starts_with("已发布") && e.stage != PipelineStage::Completed
+                ));
+                assert_eq!(
+                    tokio::fs::read(&final_ply).await.unwrap(),
+                    b"previous result"
+                );
+                // A valid candidate still must not report success if the
+                // filesystem refuses the final atomic replacement.
+                tokio::fs::write(&candidate, &valid).await.unwrap();
+                let protected = paths.project.join("protected-existing.ply");
+                tokio::fs::rename(&final_ply, &protected).await.unwrap();
+                tokio::fs::create_dir(&final_ply).await.unwrap();
+                assert!(runner
+                    .publish_reshoot_v2(
+                        &manager,
+                        &paths,
+                        &mut metadata,
+                        &mut state,
+                        &checkpoint,
+                        &report,
+                        &candidate
+                    )
+                    .await
+                    .is_err());
+                assert!(events.lock().unwrap().iter().all(
+                    |e| !e.message.starts_with("已发布") && e.stage != PipelineStage::Completed
+                ));
+                assert_eq!(
+                    tokio::fs::read(&protected).await.unwrap(),
+                    b"previous result"
+                );
+            } else {
+                assert_eq!(result.unwrap().splat_count, 23);
+                assert!(captured.iter().any(|e| e.message == "已发布 23 个 Splat"));
+                assert_eq!(captured.last().unwrap().stage, PipelineStage::Completed);
+                let saved: ProjectMetadata =
+                    serde_json::from_slice(&tokio::fs::read(&paths.metadata).await.unwrap())
+                        .unwrap();
+                assert_eq!(saved.status, ProjectStatus::Completed);
+                assert_eq!(saved.output.unwrap().splat_count, 23);
+            }
+        }
+    }
+
+    #[test]
     fn mixed_reshoot_images_leave_regular_generation_strict_and_preserve_sources() {
         let root = tempfile::tempdir().unwrap();
         let input = root.path().join("input");
@@ -1684,7 +2535,7 @@ mod tests {
             )
             .unwrap();
         }
-        ensure_masks(&colmap, &masks, &token).unwrap();
+        ensure_masks(&colmap, &masks, &token, None).unwrap();
         assert_eq!(std::fs::read(&scan.images[0].path).unwrap(), before);
         assert_eq!(
             image::image_dimensions(masks.join("reshoot_batch_1.png.png")).unwrap(),
@@ -1699,7 +2550,7 @@ mod tests {
         );
         token.cancel();
         assert!(matches!(
-            ensure_masks(&colmap, &masks, &token),
+            ensure_masks(&colmap, &masks, &token, None),
             Err(SplatError::Cancelled)
         ));
     }
@@ -1741,6 +2592,16 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires the local real Ballintoy source project, bundled engines, and GPU; writes only an isolated .cache project"]
     async fn native_ballintoy_reshoot_v2() {
+        run_native_ballintoy_reshoot(false).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires real Ballintoy media, bundled engines and GPU; runs the normal full training recipe in an isolated .cache project"]
+    async fn native_ballintoy_reshoot_normal_parameters() {
+        run_native_ballintoy_reshoot(true).await;
+    }
+
+    async fn run_native_ballintoy_reshoot(normal: bool) {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let original = repo.join(".cache/panorama-v1/projects/20261017-191833_ballintoy-erp");
         let source_metadata: ProjectMetadata =
@@ -1807,6 +2668,7 @@ mod tests {
         state.planner_enabled = true;
         let options = ReshootOptions {
             condition: ModelCondition::Good,
+            camera_relation: None,
             allow_fallback: false,
             source_identity: identity,
             input_identity: panorama::source_identity(&input).unwrap(),
@@ -1817,6 +2679,8 @@ mod tests {
         state.reshoot = Some(ReshootState {
             recipe: Some(ReshootRecipe {
                 version: RECIPE_VERSION,
+                normal_parameters_version: normal.then_some(1),
+                camera_assignment: None,
                 options,
                 initial: plan,
                 actual: plan,
@@ -1877,6 +2741,29 @@ mod tests {
         )
         .unwrap();
         let restored = manager.read_state(&paths.state).await.unwrap();
+        if normal {
+            assert_eq!(
+                restored.brush_training.resolved.unwrap().preset.total_steps,
+                resolve_panorama_training_preset(Quality::Fast, true, None, 512, 1)
+                    .unwrap()
+                    .preset
+                    .total_steps
+            );
+            assert!(restored
+                .reshoot
+                .as_ref()
+                .unwrap()
+                .recipe
+                .as_ref()
+                .unwrap()
+                .warm_parameters
+                .is_none());
+            let captured = events.lock().unwrap();
+            assert!(captured
+                .iter()
+                .any(|event| event.message == format!("已发布 {} 个 Splat", result.splat_count)));
+            assert_eq!(captured.last().unwrap().stage, PipelineStage::Completed);
+        }
         assert!(restored.reshoot.as_ref().unwrap().registered_reshoot_count > 0);
         assert_eq!(
             restored.reshoot.unwrap().recipe.unwrap().actual.training,

@@ -553,7 +553,8 @@ fn definitions() -> Vec<Tool> {
     let reshoot_options = json!({"type":"object","additionalProperties":false,"required":["condition","allowFallback","sourceIdentity","inputIdentity","projection"],"properties":{
         "condition":{"type":"string","enum":["good","appearance","geometry","unsure"]},"allowFallback":{"type":"boolean"},
         "sourceIdentity":{"type":"string"},"inputIdentity":{"type":"string"},"projection":{"type":"string","enum":["perspective","equirectangular"]},
-        "imageMatchingStrategy":{"type":"string","enum":["sequential","exhaustive"]}}});
+        "imageMatchingStrategy":{"type":"string","enum":["sequential","exhaustive"]},
+        "cameraRelation":{"type":"string","enum":["same","different","unsure"]}}});
     [
         ("get_app_status","Read the running desktop application's capabilities and current task.",json!({}),json!([]),true),
         ("inspect_reshoot_input","Inspect a registered source project and authorized supplemental input. Use returned identities for an explicit reshoot request. Does not start reconstruction or scan a full PLY.",json!({"source_project_id":id,"input_path":{"type":"string","minLength":1},"quality":{"type":"string","enum":["fast","balanced","high"]}}),json!(["source_project_id","input_path","quality"]),true),

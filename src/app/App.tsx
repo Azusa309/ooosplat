@@ -1614,7 +1614,8 @@ export function App() {
         plannerEnabled: confirmedDraft.plannerEnabled,
         reshootOptions: {
           condition: reshootAnswers![`${draft.id}:reshootCondition`] as import('../types/pipeline').ReshootCondition,
-          allowFallback: reshootAnswers![`${draft.id}:reshootSummary`] === 'fallback',
+          cameraRelation: confirmedDraft.reshootSource!.projection === 'equirectangular' ? undefined : reshootAnswers![`${draft.id}:reshootCamera`] as import('../types/pipeline').ReshootCameraRelation,
+          allowFallback: confirmedDraft.plannerEnabled,
           sourceIdentity: confirmedDraft.reshootSource!.sourceIdentity!,
           inputIdentity: confirmedDraft.reshootPlan!.sourceIdentity!,
           projection: confirmedDraft.reshootSource!.projection ?? 'perspective',
@@ -1793,7 +1794,7 @@ export function App() {
   const projectConfigurationDetails = selectedProject && projectDetail
     ? projectDetail.imported
       ? <ImportedProjectDetails detail={projectDetail} onRevealSource={() => void revealImportedSource(selectedProject.id).catch(error => setProjectActionError({ projectId: selectedProject.id, message: messageOf(error), occurredAt: Date.now() }))} onRelink={() => void relinkImportedSource(selectedProject.id)} />
-      : <TaskConfiguration reshootRecipe={projectDetail.reshootRecipe} sourcePath={projectDetail.sourcePath ?? selectedProject.sourceName} projectsRoot={projectDetail.projectsRoot ?? parentPath(selectedProject.projectPath)} inputType={projectDetail.inputType!} quality={selectedProject.quality!} plannerEnabled={projectDetail.plannerEnabled!} completed={selectedProject.status === "completed"} inheritedFrom={selectedProject.status === "completed" ? null : projectDetail.sourceProjectId ? "reshoot" : "resume"} acceleration={systemAcceleration} videoProjection={projectDetail.videoProjection} inputProjection={projectDetail.inputProjection} video={projectDetail.video} imageSequence={projectDetail.imageSequence} estimatedFrames={projectDetail.estimatedFrames} estimate={projectEstimate?.projectId === selectedProject.id ? projectEstimate.value : null} />
+      : <TaskConfiguration active={selectedProject.status === "running"} reshootRecipe={projectDetail.reshootRecipe} sourcePath={projectDetail.sourcePath ?? selectedProject.sourceName} projectsRoot={projectDetail.projectsRoot ?? parentPath(selectedProject.projectPath)} inputType={projectDetail.inputType!} quality={selectedProject.quality!} plannerEnabled={projectDetail.plannerEnabled!} completed={selectedProject.status === "completed"} inheritedFrom={selectedProject.status === "completed" ? null : projectDetail.sourceProjectId ? "reshoot" : "resume"} acceleration={systemAcceleration} videoProjection={projectDetail.videoProjection} inputProjection={projectDetail.inputProjection} video={projectDetail.video} imageSequence={projectDetail.imageSequence} estimatedFrames={projectDetail.estimatedFrames} estimate={projectEstimate?.projectId === selectedProject.id ? projectEstimate.value : null} />
     : null;
   const historicalTaskProgress = selectedProject && projectDetail
     ? projectDetail.imported || projectDetail.stage == null || projectDetail.progress == null
@@ -1928,7 +1929,6 @@ export function App() {
 
         {selectedDraft?.kind === "reshoot" && <section className="reshoot-task-page">
           <p className="reshoot-task-intro">{t(selectedDraft.reshootSource?.projection === 'equirectangular' ? 'reshoot.panoramaHint' : 'reshoot.multiCameraHint')}</p>
-          <ul className="reshoot-capture-tips"><li>{t("reshoot.keepOverlap")}</li></ul>
 
           <div className="form-section">
             <div className="field-label-row input-label-row"><label className="field-label">{t("input.label")}</label><CaptureAdviceHelp /></div>

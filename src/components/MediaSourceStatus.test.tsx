@@ -51,6 +51,23 @@ it('shows the metadata explanation only for confirmed ERP and disallows unsuppor
   expect(container.textContent).toContain('不支持此素材');
 });
 
+it.each(['zh-CN', 'en'] as const)('keeps an unsupported ERP choice disabled but removes its warning after choosing ordinary video (%s)', async locale => {
+  localStorage.setItem('ooo-splat-language', locale);
+  const unsupported = { ...detection, supportedErp: false, unsupported: true };
+  await render({ inputType: 'video', projection: 'auto', detection: unsupported });
+  expect(container.querySelector('.media-source-warning')).not.toBeNull();
+  await render({ inputType: 'video', projection: 'perspective', detection: unsupported });
+  expect(container.querySelector('.media-source-warning')).toBeNull();
+  expect(container.querySelector<HTMLOptionElement>('option[value=equirectangular]')?.disabled).toBe(true);
+  expect(container.querySelector('.media-source-copy > p')?.textContent).toBe(locale === 'zh-CN' ? '将按普通视频处理' : 'This video will use ordinary-video processing.');
+});
+
+it('shows an ordinary rotated MOV result without an unsupported-panorama warning or type question', async () => {
+  await render({ inputType: 'video', projection: 'auto', detection: { ...detection, requiresChoice: false, supportedErp: false, unsupported: false } });
+  expect(container.querySelector('.media-source-copy > p')?.textContent).toBe('将按普通视频处理');
+  expect(container.querySelector('.media-source-warning, select')).toBeNull();
+});
+
 it.each([
   ['equirectangular', '.lucide-globe'],
   ['perspective', '.lucide-tv-minimal-play'],

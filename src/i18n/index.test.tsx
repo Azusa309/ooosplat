@@ -12,6 +12,26 @@ it("panorama initialization limit uses approved English copy", () => {
   expect(localizePipelineMessage("zh-CN", message)).toBe(message);
 });
 
+it('localizes the approved reshoot lifecycle logs without exposing Chinese cache labels', () => {
+  for (const [message, expected] of [
+    ['正在准备原项目文件：3/20', 'Preparing original project files: 3/20'],
+    ['正在准备补拍画面：3/20', 'Preparing reshoot frames: 3/20'],
+    ['正在整理补拍画面：3/20', 'Organizing reshoot frames: 3/20'],
+    ['正在检查画面与蒙版：3/20', 'Checking images and masks: 3/20'],
+    ['补拍画面准备完成：原画面 20 张，新增 3 张', 'Reshoot frames prepared: 20 original images, 3 new images'],
+    ['补拍画面已加入：3/20', 'Reshoot images registered: 3/20'],
+    ['补拍相机设置：沿用原设置', 'Reshoot camera settings: reusing the original settings'],
+    ['补拍相机设置：独立处理', 'Reshoot camera settings: processing independently'],
+    ['补拍相机设置：条件不兼容，独立处理', 'Reshoot camera settings: incompatible conditions, processing independently'],
+    ['正在准备原模型训练副本', 'Preparing the original model training snapshot'],
+    ['复用已完成的补拍缓存：原项目文件', 'Reusing completed reshoot cache: original project files'],
+    ['补拍处理仍在进行，当前步骤可能耗时较长，请耐心等待', 'Reshoot processing is still running. This step may take a while. Please wait.'],
+  ]) {
+    expect(localizePipelineMessage('en', message)).toBe(expected);
+    expect(localizePipelineMessage('zh-CN', message)).toBe(message);
+  }
+});
+
 function Harness() {
   const { locale, t, toggleLocale, formatDuration } = useI18n();
   return <div>

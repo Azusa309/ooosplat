@@ -31,10 +31,27 @@ pub enum TrainingMode {
     Cold,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CameraRelation {
+    Same,
+    Different,
+    Unsure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraAssignment {
+    pub version: u32,
+    pub reused_camera_id: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReshootOptions {
     pub condition: ModelCondition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_relation: Option<CameraRelation>,
     pub allow_fallback: bool,
     pub source_identity: String,
     pub input_identity: String,
@@ -172,6 +189,11 @@ pub fn explicit_numeric_divergence(error: &crate::error::SplatError) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct ReshootRecipe {
     pub version: u32,
+    /// Absent in existing tasks: preserve their shortened warm-start recipe.
+    #[serde(default)]
+    pub normal_parameters_version: Option<u32>,
+    #[serde(default)]
+    pub camera_assignment: Option<CameraAssignment>,
     pub options: ReshootOptions,
     pub initial: ReshootPlan,
     pub actual: ReshootPlan,
@@ -212,6 +234,10 @@ pub struct PanoramaFrameRecord {
 }
 
 impl ReshootRecipe {
+    pub fn uses_normal_parameters(&self) -> bool {
+        self.normal_parameters_version == Some(1)
+    }
+
     pub fn fallback(&mut self, failure: AlgorithmFailure) -> bool {
         if !self.options.allow_fallback {
             return false;
@@ -379,8 +405,11 @@ mod tests {
     fn recipe_survives_resume_and_bounds_authorized_fallbacks() {
         let mut recipe = ReshootRecipe {
             version: RECIPE_VERSION,
+            normal_parameters_version: None,
+            camera_assignment: None,
             options: ReshootOptions {
                 condition: ModelCondition::Good,
+                camera_relation: None,
                 allow_fallback: false,
                 source_identity: "source".into(),
                 input_identity: "input".into(),
@@ -400,6 +429,31 @@ mod tests {
             stored_input_identity: None,
             panorama_frames: vec![],
         };
+        let mut legacy = serde_json::to_value(&recipe).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("normalParametersVersion");
+        legacy.as_object_mut().unwrap().remove("cameraAssignment");
+        legacy["options"]
+            .as_object_mut()
+            .unwrap()
+            .remove("cameraRelation");
+        let restored: ReshootRecipe = serde_json::from_value(legacy).unwrap();
+        assert!(!restored.uses_normal_parameters());
+        assert!(restored.camera_assignment.is_none());
+        assert!(restored.options.camera_relation.is_none());
+        let mut normal = recipe.clone();
+        normal.normal_parameters_version = Some(1);
+        normal.options.camera_relation = Some(CameraRelation::Same);
+        normal.camera_assignment = Some(CameraAssignment {
+            version: 1,
+            reused_camera_id: Some(7),
+        });
+        let normal: ReshootRecipe =
+            serde_json::from_value(serde_json::to_value(normal).unwrap()).unwrap();
+        assert!(normal.uses_normal_parameters());
+        assert_eq!(normal.camera_assignment.unwrap().reused_camera_id, Some(7));
         assert!(!recipe.fallback(AlgorithmFailure::NoNewRegistrations));
         recipe.options.allow_fallback = true;
         assert!(recipe.fallback(AlgorithmFailure::InvalidWarmResult));
